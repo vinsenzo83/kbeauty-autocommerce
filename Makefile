@@ -1,12 +1,30 @@
 .PHONY: up down logs test lint fmt build
 
-COMPOSE = docker compose -f infra/docker-compose.yml
+COMPOSE  = docker compose -f infra/docker-compose.yml
 APP_NAME = kbeauty-autocommerce
+PYTHON   = .venv/bin/python
+PYTEST   = .venv/bin/pytest
+RUFF     = .venv/bin/ruff
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
+# Docker가 없는 환경에서는 'make up-local' 을 사용하세요.
 
 up:
 	$(COMPOSE) up -d --build
+
+up-local:
+	@echo "[make up-local] Starting PostgreSQL, Redis, API and Worker locally..."
+	@sudo pg_ctlcluster 15 main start 2>/dev/null || true
+	@sudo redis-server --daemonize yes --logfile /tmp/redis.log 2>/dev/null || true
+	@sleep 1
+	@sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='kbeauty'" | grep -q 1 \
+		|| sudo -u postgres psql -c "CREATE USER kbeauty WITH PASSWORD 'kbeauty';"
+	@sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='kbeauty'" | grep -q 1 \
+		|| sudo -u postgres psql -c "CREATE DATABASE kbeauty OWNER kbeauty;"
+	@pm2 delete kbeauty-api kbeauty-worker 2>/dev/null || true
+	pm2 start ecosystem.config.cjs
+	@sleep 2
+	@curl -sf http://localhost:8000/health && echo " ✓ API healthy" || echo " ✗ API not ready"
 
 down:
 	$(COMPOSE) down -v
@@ -26,18 +44,18 @@ ps:
 # ── Tests (run locally, not inside Docker) ───────────────────────────────────
 
 test:
-	pytest -v --tb=short
+	$(PYTEST) -v --tb=short
 
 test-cov:
-	pytest -v --tb=short --cov=app --cov-report=term-missing
+	$(PYTEST) -v --tb=short --cov=app --cov-report=term-missing
 
 # ── Code quality ─────────────────────────────────────────────────────────────
 
 lint:
-	ruff check app tests
+	$(RUFF) check app tests
 
 fmt:
-	ruff format app tests
+	$(RUFF) format app tests
 
 # ── DB migrations (inside running api container) ─────────────────────────────
 
@@ -48,13 +66,14 @@ migrate:
 
 help:
 	@echo ""
-	@echo "  make up          – Start all services in detached mode"
+	@echo "  make up          – Start all services via Docker Compose"
+	@echo "  make up-local    – Start services locally (no Docker)"
 	@echo "  make down        – Stop and remove containers + volumes"
 	@echo "  make logs        – Tail all service logs"
 	@echo "  make build       – Rebuild Docker images"
 	@echo "  make restart     – Restart api + worker"
 	@echo "  make ps          – Show running containers"
-	@echo "  make test        – Run pytest locally"
+	@echo "  make test        – Run pytest via .venv"
 	@echo "  make test-cov    – Run pytest with coverage"
 	@echo "  make lint        – Lint with ruff"
 	@echo "  make fmt         – Format with ruff"
