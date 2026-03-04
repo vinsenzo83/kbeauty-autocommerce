@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import json
 from typing import AsyncGenerator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -107,7 +107,7 @@ async def test_first_webhook_creates_order(client: AsyncClient) -> None:
     sig = _sign(raw)
 
     with patch("app.webhooks.shopify.celery_app") as mock_celery:
-        mock_celery.send_task = AsyncMock()
+        mock_celery.send_task = MagicMock()
         resp = await client.post(
             "/webhooks/shopify/order-created",
             content=raw,
@@ -142,7 +142,7 @@ async def test_duplicate_webhook_is_idempotent(client: AsyncClient) -> None:
     }
 
     with patch("app.webhooks.shopify.celery_app") as mock_celery:
-        mock_celery.send_task = AsyncMock()
+        mock_celery.send_task = MagicMock()
         r1 = await client.post("/webhooks/shopify/order-created", content=raw, headers=headers)
         r2 = await client.post("/webhooks/shopify/order-created", content=raw, headers=headers)
 
