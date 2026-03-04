@@ -7,6 +7,86 @@ K-Beauty 주문 자동화 백엔드 — FastAPI · PostgreSQL · Redis · Celery
 | Sprint 1 (v0.1.0) | ✅ 완료 | Shopify 웹훅 수신, HMAC 검증, 중복 방지, 정책 검증 |
 | Sprint 2 (v0.2.0) | ✅ 완료 | StyleKorean 공급사 주문 배치, PLACING→PLACED 상태 추가, Admin retry API |
 | Sprint 3 (v0.3.0) | ✅ 완료 | My Orders 트래킹 스크래핑, SHIPPED 상태, Celery beat 자동 폴링, Shopify fulfillment |
+| Sprint 4 (v0.4.0) | ✅ 완료 | 베스트셀러 500개 크롤링, 상품 DB 저장, Shopify 상품 동기화, 이미지 다운로드 |
+
+---
+
+## Sprint 4 — 베스트셀러 크롤러 + Shopify 상품 동기화
+
+### 파이프라인
+
+```
+[Celery beat / 12시간마다] crawl_best_sellers()
+  └─▶ StyleKorean Best Sellers 페이지 순회 (최대 500개 URL 수집)
+        ├─▶ 각 상품 페이지 Playwright 로드 → parse_product_page(html)
+        │     └─▶ name, brand, price, sale_price, stock_status, image_urls 파싱
+        └─▶ product_service.upsert_product() → products 테이블 upsert
+
+[Celery beat / 30분마다] sync_products_to_shopify()
+  └─▶ get_unsynced_products() → shopify_product_id가 NULL인 상품 조회
+        ├─▶ ShopifyProductService.create_or_update_product(product)
+        │     ├─▶ POST /admin/api/2024-01/products.json  (신규)
+        │     └─▶ metafield namespace=supplier, key=product_url 설정
+        └─▶ mark_synced(product, shopify_id) → shopify_product_id 저장
+```
+
+### 새 파일 구조
+
+```
+app/
+├── crawlers/
+│   ├── product_parser.py       # HTML → dict 순수 파서 (외부 의존성 없음)
+│   ├── stylekorean_crawler.py  # Playwright 크롤러 + URL 수집 + upsert 호출
+│   └── image_downloader.py     # httpx 비동기 이미지 다운로드
+├── models/
+│   └── product.py              # Product ORM 모델
+├── services/
+│   ├── product_service.py      # upsert_product, get_unsynced_products, mark_synced
+│   └── shopify_product_service.py  # create_or_update_product + metafield 설정
+└── workers/
+    └── tasks_products.py       # crawl_best_sellers, sync_products_to_shopify Celery tasks
+migrations/
+└── 0004_sprint4_products.sql   # products 테이블 + 인덱스 + trigger (idempotent)
+```
+
+### 새 환경 변수
+
+```dotenv
+STYLEKOREAN_BASE_URL=https://www.stylekorean.com  # 기본 URL (변경 불필요)
+PRODUCT_CRAWL_LIMIT=500         # 크롤 최대 상품 수
+PRODUCT_CRAWL_INTERVAL=43200    # 크롤 주기 (초, 기본값 43200 = 12시간)
+PRODUCT_SYNC_INTERVAL=1800      # Shopify 동기화 주기 (초, 기본값 1800 = 30분)
+```
+
+### DB 마이그레이션 (Sprint 4)
+
+```bash
+psql $DATABASE_URL -f migrations/0004_sprint4_products.sql
+```
+
+### Celery Beat 스케줄 (v0.4.0 전체)
+
+```
+poll-tracking-every-interval      → tasks_tracking.poll_tracking        10분마다
+crawl-best-sellers-every-12h      → tasks_products.crawl_best_sellers   12시간마다
+sync-products-to-shopify-every-30m→ tasks_products.sync_products_to_shopify 30분마다
+```
+
+### 수동 크롤 트리거
+
+```python
+from app.workers.celery_app import celery_app
+celery_app.send_task("workers.tasks_products.crawl_best_sellers")
+celery_app.send_task("workers.tasks_products.sync_products_to_shopify")
+```
+
+### 이미지 저장 경로
+
+```
+{STORAGE_PATH}/product_images/{product_id}/0.jpg
+{STORAGE_PATH}/product_images/{product_id}/1.jpg
+...
+```
 
 ---
 
@@ -29,23 +109,6 @@ PLACED (supplier_order_id 보유)
 
 ```dotenv
 TRACKING_POLL_INTERVAL=600   # 폴링 주기 (초, 기본값 600 = 10분)
-```
-
-### Celery Beat 실행
-
-```bash
-# Docker Compose 환경 (docker-compose.yml에 beat 서비스 추가 권장)
-celery -A app.workers.celery_app:celery_app beat --loglevel=info
-
-# 또는 worker + beat 합산 실행 (개발 환경용)
-celery -A app.workers.celery_app:celery_app worker --beat --loglevel=info
-```
-
-### 수동 트래킹 폴링 트리거
-
-```python
-from app.workers.celery_app import celery_app
-celery_app.send_task("workers.tasks_tracking.poll_tracking")
 ```
 
 ### 실패 아티팩트 경로

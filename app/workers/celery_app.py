@@ -16,11 +16,14 @@ celery_app = Celery(
     include=[
         "app.workers.tasks_order",
         "app.workers.tasks_tracking",
+        "app.workers.tasks_products",   # Sprint 4
     ],
 )
 
-# ── Poll interval (seconds) – overridable via env ─────────────────────────────
-_POLL_INTERVAL = int(os.getenv("TRACKING_POLL_INTERVAL", "600"))  # default 10 min
+# ── Interval constants (seconds) – overridable via env ───────────────────────
+_POLL_INTERVAL          = int(os.getenv("TRACKING_POLL_INTERVAL",  "600"))   # 10 min
+_CRAWL_INTERVAL         = int(os.getenv("PRODUCT_CRAWL_INTERVAL",  "43200")) # 12 h
+_SHOPIFY_SYNC_INTERVAL  = int(os.getenv("PRODUCT_SYNC_INTERVAL",   "1800"))  # 30 min
 
 celery_app.conf.update(
     # Serialisation
@@ -41,10 +44,25 @@ celery_app.conf.update(
 
     # ── Periodic schedule (Celery beat) ───────────────────────────────────────
     beat_schedule={
+        # Sprint 3: tracking poll
         "poll-tracking-every-interval": {
             "task":     "workers.tasks_tracking.poll_tracking",
-            "schedule": _POLL_INTERVAL,          # seconds (timedelta-compatible int)
+            "schedule": _POLL_INTERVAL,
             "options":  {"expires": _POLL_INTERVAL},
+        },
+
+        # Sprint 4: best-seller crawl every 12 h
+        "crawl-best-sellers-every-12h": {
+            "task":     "workers.tasks_products.crawl_best_sellers",
+            "schedule": _CRAWL_INTERVAL,
+            "options":  {"expires": _CRAWL_INTERVAL},
+        },
+
+        # Sprint 4: Shopify product sync every 30 min
+        "sync-products-to-shopify-every-30m": {
+            "task":     "workers.tasks_products.sync_products_to_shopify",
+            "schedule": _SHOPIFY_SYNC_INTERVAL,
+            "options":  {"expires": _SHOPIFY_SYNC_INTERVAL},
         },
     },
 )

@@ -10,6 +10,7 @@ from app.logging import configure_logging
 from app.db.session import engine
 from app.models.order import Base as OrderBase
 from app.models.event_log import Base as EventBase
+from app.models.product import Base as ProductBase
 from app.webhooks.shopify import router as shopify_router
 from app.routers.admin import router as admin_router
 
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     async with engine.begin() as conn:
         await conn.run_sync(OrderBase.metadata.create_all)
         await conn.run_sync(EventBase.metadata.create_all)
+        await conn.run_sync(ProductBase.metadata.create_all)
 
     logger.info("database tables ensured")
     yield
@@ -38,7 +40,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="KBeauty AutoCommerce API",
-        version="0.2.0",
+        version="0.4.0",
         debug=settings.DEBUG,
         lifespan=lifespan,
     )
