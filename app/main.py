@@ -11,6 +11,7 @@ from app.db.session import engine
 from app.models.order import Base as OrderBase
 from app.models.event_log import Base as EventBase
 from app.webhooks.shopify import router as shopify_router
+from app.routers.admin import router as admin_router
 
 logger = structlog.get_logger(__name__)
 
@@ -37,7 +38,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="KBeauty AutoCommerce API",
-        version="0.1.0",
+        version="0.2.0",
         debug=settings.DEBUG,
         lifespan=lifespan,
     )
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(shopify_router, prefix="/webhooks/shopify", tags=["webhooks"])
+    app.include_router(admin_router, prefix="/admin", tags=["admin"])
 
     @app.get("/health", tags=["ops"])
     async def health() -> dict[str, str]:

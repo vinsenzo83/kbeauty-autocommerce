@@ -1,6 +1,91 @@
 # kbeauty-autocommerce
 
-K-Beauty 주문 자동화 백엔드 MVP — FastAPI · PostgreSQL · Redis · Celery
+K-Beauty 주문 자동화 백엔드 — FastAPI · PostgreSQL · Redis · Celery
+
+| 스프린트 | 상태 | 내용 |
+|---|---|---|
+| Sprint 1 (v0.1.0) | ✅ 완료 | Shopify 웹훅 수신, HMAC 검증, 중복 방지, 정책 검증 |
+| Sprint 2 (v0.2.0) | ✅ 완료 | StyleKorean 공급사 주문 배치, PLACING→PLACED 상태 추가, Admin retry API |
+
+---
+
+## Sprint 2 — 공급사 자동 발주 모듈
+
+### 아키텍처 추가사항
+
+```
+VALIDATED → PLACING → (StyleKoreanClient.create_order) → PLACED
+                                                        ↘ FAILED (+ event_log artifact)
+```
+
+### 새 환경 변수
+
+```dotenv
+STYLEKOREAN_EMAIL=your@email.com
+STYLEKOREAN_PASSWORD=your-password
+STORAGE_PATH=./storage          # 실패 아티팩트 저장 경로
+```
+
+### Playwright 설치 (실제 발주 실행 시)
+
+```bash
+pip install playwright
+playwright install chromium
+```
+
+> **테스트는 Playwright 없이 실행됩니다.** 모든 tests는 mock만 사용합니다.
+
+### 개발 환경에서 수동 태스크 트리거
+
+```python
+# Python shell (venv 활성화 후)
+from app.workers.celery_app import celery_app
+celery_app.send_task("workers.tasks_order.process_new_order", args=["<order_uuid>"])
+
+# 또는 retry-place (FAILED 상태 주문 재시도)
+celery_app.send_task("workers.tasks_order.retry_place_order", args=["<order_uuid>"])
+```
+
+또는 Admin API 엔드포인트로 재시도:
+
+```bash
+curl -X POST http://localhost:8000/admin/orders/<order_uuid>/retry-place
+```
+
+### 실패 아티팩트 저장 위치
+
+Playwright 실행 중 오류 발생 시 아래 경로에 저장됩니다:
+
+```
+{STORAGE_PATH}/bot_failures/{order_id}/
+  ├── screenshot.png   # 오류 발생 시점 스크린샷
+  ├── page.html        # 오류 발생 시점 HTML 덤프
+  └── reason.txt       # 오류 이유 + 타임스탬프
+```
+
+### DB 마이그레이션 (Sprint 2)
+
+기존 PostgreSQL DB가 있는 경우:
+
+```bash
+# Docker Compose 환경
+docker compose exec api psql $DATABASE_URL -f migrations/0002_sprint2_supplier_fields.sql
+
+# 로컬 환경
+psql postgresql://kbeauty:kbeauty@localhost/kbeauty -f migrations/0002_sprint2_supplier_fields.sql
+```
+
+새로 시작하는 경우 `create_all`이 자동으로 모든 컬럼을 생성합니다.
+
+### 새 API 엔드포인트
+
+| Method | Path | 설명 |
+|---|---|---|
+| `POST` | `/admin/orders/{id}/retry-place` | FAILED 주문 공급사 발주 재시도 |
+
+> TODO: 프로덕션 배포 전 JWT 인증 추가 필요 (`app/routers/admin.py` 참고)
+
+---
 
 ---
 

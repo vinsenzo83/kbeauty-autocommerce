@@ -13,24 +13,32 @@ class Base(DeclarativeBase):
 
 
 class OrderStatus(str, PyEnum):
-    RECEIVED = "RECEIVED"
+    RECEIVED  = "RECEIVED"
     VALIDATED = "VALIDATED"
-    FAILED = "FAILED"
+    PLACING   = "PLACING"
+    PLACED    = "PLACED"
+    FAILED    = "FAILED"
 
 
 class Order(Base):
     __tablename__ = "orders"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)
-    shopify_order_id = Column(String(64), unique=True, nullable=False, index=True)
-    email = Column(String(255), nullable=True)
-    total_price = Column(Numeric(12, 2), nullable=True)
-    currency = Column(String(10), nullable=True)
-    shipping_address_json = Column(JSON, nullable=True)
-    line_items_json = Column(JSON, nullable=True)
-    financial_status = Column(String(64), nullable=True)
-    status = Column(String(16), nullable=False, default=OrderStatus.RECEIVED)
-    fail_reason = Column(Text, nullable=True)
+    id                   = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)
+    shopify_order_id     = Column(String(64),  unique=True, nullable=False, index=True)
+    email                = Column(String(255), nullable=True)
+    total_price          = Column(Numeric(12, 2), nullable=True)
+    currency             = Column(String(10),  nullable=True)
+    shipping_address_json= Column(JSON,        nullable=True)
+    line_items_json      = Column(JSON,        nullable=True)
+    financial_status     = Column(String(64),  nullable=True)
+    status               = Column(String(16),  nullable=False, default=OrderStatus.RECEIVED)
+    fail_reason          = Column(Text,        nullable=True)
+
+    # ── Sprint 2: supplier placement fields ──────────────────────────────────
+    supplier             = Column(String(64),  nullable=True)   # e.g. "stylekorean"
+    supplier_order_id    = Column(String(128), nullable=True)   # confirmation ID from supplier
+    placed_at            = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True),
@@ -40,4 +48,7 @@ class Order(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<Order id={self.id} shopify_order_id={self.shopify_order_id} status={self.status}>"
+        return (
+            f"<Order id={self.id} shopify_order_id={self.shopify_order_id} "
+            f"status={self.status} supplier={self.supplier}>"
+        )

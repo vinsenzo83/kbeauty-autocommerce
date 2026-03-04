@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -59,8 +60,40 @@ async def mark_validated(session: AsyncSession, order: Order) -> Order:
     return order
 
 
+async def mark_placing(session: AsyncSession, order: Order) -> Order:
+    """Transition order to PLACING (supplier call in progress)."""
+    order.status = OrderStatus.PLACING
+    session.add(order)
+    await session.flush()
+    logger.info("order.placing", order_id=str(order.id))
+    return order
+
+
+async def mark_placed(
+    session: AsyncSession,
+    order: Order,
+    *,
+    supplier: str,
+    supplier_order_id: str,
+) -> Order:
+    """Transition order to PLACED after successful supplier confirmation."""
+    order.status            = OrderStatus.PLACED
+    order.supplier          = supplier
+    order.supplier_order_id = supplier_order_id
+    order.placed_at         = datetime.now(timezone.utc)
+    session.add(order)
+    await session.flush()
+    logger.info(
+        "order.placed",
+        order_id=str(order.id),
+        supplier=supplier,
+        supplier_order_id=supplier_order_id,
+    )
+    return order
+
+
 async def mark_failed(session: AsyncSession, order: Order, reason: str) -> Order:
-    order.status = OrderStatus.FAILED
+    order.status     = OrderStatus.FAILED
     order.fail_reason = reason
     session.add(order)
     await session.flush()
