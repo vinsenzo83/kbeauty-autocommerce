@@ -17,27 +17,33 @@ class OrderStatus(str, PyEnum):
     VALIDATED = "VALIDATED"
     PLACING   = "PLACING"
     PLACED    = "PLACED"
+    SHIPPED   = "SHIPPED"
     FAILED    = "FAILED"
 
 
 class Order(Base):
     __tablename__ = "orders"
 
-    id                   = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)
-    shopify_order_id     = Column(String(64),  unique=True, nullable=False, index=True)
-    email                = Column(String(255), nullable=True)
-    total_price          = Column(Numeric(12, 2), nullable=True)
-    currency             = Column(String(10),  nullable=True)
-    shipping_address_json= Column(JSON,        nullable=True)
-    line_items_json      = Column(JSON,        nullable=True)
-    financial_status     = Column(String(64),  nullable=True)
-    status               = Column(String(16),  nullable=False, default=OrderStatus.RECEIVED)
-    fail_reason          = Column(Text,        nullable=True)
+    id                    = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)
+    shopify_order_id      = Column(String(64),   unique=True, nullable=False, index=True)
+    email                 = Column(String(255),  nullable=True)
+    total_price           = Column(Numeric(12, 2), nullable=True)
+    currency              = Column(String(10),   nullable=True)
+    shipping_address_json = Column(JSON,         nullable=True)
+    line_items_json       = Column(JSON,         nullable=True)
+    financial_status      = Column(String(64),   nullable=True)
+    status                = Column(String(16),   nullable=False, default=OrderStatus.RECEIVED)
+    fail_reason           = Column(Text,         nullable=True)
 
-    # ── Sprint 2: supplier placement fields ──────────────────────────────────
-    supplier             = Column(String(64),  nullable=True)   # e.g. "stylekorean"
-    supplier_order_id    = Column(String(128), nullable=True)   # confirmation ID from supplier
-    placed_at            = Column(DateTime(timezone=True), nullable=True)
+    # ── Sprint 2: supplier placement ─────────────────────────────────────────
+    supplier              = Column(String(64),   nullable=True)
+    supplier_order_id     = Column(String(128),  nullable=True)
+    placed_at             = Column(DateTime(timezone=True), nullable=True)
+
+    # ── Sprint 3: tracking ────────────────────────────────────────────────────
+    tracking_number       = Column(String(128),  nullable=True)
+    tracking_url          = Column(String(512),  nullable=True)
+    shipped_at            = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(

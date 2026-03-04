@@ -92,8 +92,46 @@ async def mark_placed(
     return order
 
 
+async def mark_shipped(
+    session: AsyncSession,
+    order: Order,
+    *,
+    tracking_number: str,
+    tracking_url: str | None = None,
+) -> Order:
+    """Transition order to SHIPPED after tracking confirmed."""
+    order.status         = OrderStatus.SHIPPED
+    order.tracking_number = tracking_number
+    order.tracking_url   = tracking_url
+    order.shipped_at     = datetime.now(timezone.utc)
+    session.add(order)
+    await session.flush()
+    logger.info(
+        "order.shipped",
+        order_id=str(order.id),
+        tracking_number=tracking_number,
+        tracking_url=tracking_url,
+    )
+    return order
+
+
+async def get_placed_untracked(session: AsyncSession) -> list[Order]:
+    """Return all PLACED orders that have no tracking_number yet."""
+    from sqlalchemy import and_
+
+    result = await session.execute(
+        select(Order).where(
+            and_(
+                Order.status == OrderStatus.PLACED,
+                Order.tracking_number.is_(None),
+            )
+        )
+    )
+    return list(result.scalars().all())
+
+
 async def mark_failed(session: AsyncSession, order: Order, reason: str) -> Order:
-    order.status     = OrderStatus.FAILED
+    order.status      = OrderStatus.FAILED
     order.fail_reason = reason
     session.add(order)
     await session.flush()

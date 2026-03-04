@@ -6,6 +6,75 @@ K-Beauty 주문 자동화 백엔드 — FastAPI · PostgreSQL · Redis · Celery
 |---|---|---|
 | Sprint 1 (v0.1.0) | ✅ 완료 | Shopify 웹훅 수신, HMAC 검증, 중복 방지, 정책 검증 |
 | Sprint 2 (v0.2.0) | ✅ 완료 | StyleKorean 공급사 주문 배치, PLACING→PLACED 상태 추가, Admin retry API |
+| Sprint 3 (v0.3.0) | ✅ 완료 | My Orders 트래킹 스크래핑, SHIPPED 상태, Celery beat 자동 폴링, Shopify fulfillment |
+
+---
+
+## Sprint 3 — 트래킹 자동화
+
+### 전체 파이프라인
+
+```
+PLACED (supplier_order_id 보유)
+  └─▶ [Celery beat / 10분마다] poll_tracking()
+        ├─▶ StyleKoreanClient.get_tracking(supplier_order_id)
+        │     └─▶ My Orders 페이지 스크래핑 → tracking_number + carrier
+        ├─▶ 트래킹 발견 시:
+        │     ├─▶ Order → SHIPPED (tracking_number, tracking_url, shipped_at 저장)
+        │     └─▶ Shopify fulfillment 생성 (notify_customer=true)
+        └─▶ 미발송 시: 조용히 스킵
+```
+
+### 새 환경 변수
+
+```dotenv
+TRACKING_POLL_INTERVAL=600   # 폴링 주기 (초, 기본값 600 = 10분)
+```
+
+### Celery Beat 실행
+
+```bash
+# Docker Compose 환경 (docker-compose.yml에 beat 서비스 추가 권장)
+celery -A app.workers.celery_app:celery_app beat --loglevel=info
+
+# 또는 worker + beat 합산 실행 (개발 환경용)
+celery -A app.workers.celery_app:celery_app worker --beat --loglevel=info
+```
+
+### 수동 트래킹 폴링 트리거
+
+```python
+from app.workers.celery_app import celery_app
+celery_app.send_task("workers.tasks_tracking.poll_tracking")
+```
+
+### 실패 아티팩트 경로
+
+| 유형 | 저장 경로 |
+|---|---|
+| 주문 배치 실패 | `{STORAGE_PATH}/bot_failures/{order_id}/` |
+| 트래킹 스크래핑 실패 | `{STORAGE_PATH}/bot_failures/tracking/{supplier_order_id}/` |
+
+각 디렉토리에 `screenshot.png`, `page.html`, `reason.txt` 저장됩니다.
+
+### DB 마이그레이션 (Sprint 3)
+
+```bash
+psql $DATABASE_URL -f migrations/0003_sprint3_tracking_fields.sql
+```
+
+### 지원 택배사 (자동 URL 생성)
+
+| 택배사 | 트래킹 URL |
+|---|---|
+| DHL | dhl.com |
+| FedEx | fedex.com |
+| UPS | ups.com |
+| USPS | usps.com |
+| EMS | ems.com.cn |
+| CJ대한통운 | cjlogistics.com |
+| ePacket | 17track.net |
+| SF Express | sf-express.com |
 
 ---
 

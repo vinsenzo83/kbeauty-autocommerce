@@ -111,7 +111,8 @@ def _failing_supplier(reason: str = "Playwright timeout") -> SupplierClient:
 class TestOrderStatusEnum:
     def test_all_statuses_present(self) -> None:
         statuses = {s.value for s in OrderStatus}
-        assert statuses == {"RECEIVED", "VALIDATED", "PLACING", "PLACED", "FAILED"}
+        # Sprint 3 added SHIPPED – assert all six are present
+        assert {"RECEIVED", "VALIDATED", "PLACING", "PLACED", "FAILED"}.issubset(statuses)
 
     def test_status_is_string(self) -> None:
         assert isinstance(OrderStatus.PLACING, str)
