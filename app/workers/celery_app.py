@@ -16,16 +16,18 @@ celery_app = Celery(
     include=[
         "app.workers.tasks_order",
         "app.workers.tasks_tracking",
-        "app.workers.tasks_products",    # Sprint 4
-        "app.workers.tasks_inventory",   # Sprint 6
+        "app.workers.tasks_products",          # Sprint 4
+        "app.workers.tasks_inventory",         # Sprint 6
+        "app.workers.tasks_supplier_products", # Sprint 7
     ],
 )
 
 # ── Interval constants (seconds) – overridable via env ───────────────────────
-_POLL_INTERVAL          = int(os.getenv("TRACKING_POLL_INTERVAL",  "600"))   # 10 min
-_CRAWL_INTERVAL         = int(os.getenv("PRODUCT_CRAWL_INTERVAL",  "43200")) # 12 h
-_SHOPIFY_SYNC_INTERVAL  = int(os.getenv("PRODUCT_SYNC_INTERVAL",   "1800"))  # 30 min
-_INVENTORY_SYNC_INTERVAL= int(os.getenv("INVENTORY_SYNC_INTERVAL", "1800"))  # 30 min
+_POLL_INTERVAL               = int(os.getenv("TRACKING_POLL_INTERVAL",       "600"))   # 10 min
+_CRAWL_INTERVAL              = int(os.getenv("PRODUCT_CRAWL_INTERVAL",        "43200")) # 12 h
+_SHOPIFY_SYNC_INTERVAL       = int(os.getenv("PRODUCT_SYNC_INTERVAL",         "1800"))  # 30 min
+_INVENTORY_SYNC_INTERVAL     = int(os.getenv("INVENTORY_SYNC_INTERVAL",       "1800"))  # 30 min
+_SUPPLIER_SYNC_INTERVAL      = int(os.getenv("SUPPLIER_SYNC_INTERVAL",        "3600"))  # 60 min
 
 celery_app.conf.update(
     # Serialisation
@@ -72,6 +74,13 @@ celery_app.conf.update(
             "task":     "workers.tasks_inventory.sync_inventory",
             "schedule": _INVENTORY_SYNC_INTERVAL,
             "options":  {"expires": _INVENTORY_SYNC_INTERVAL},
+        },
+
+        # Sprint 7: Multi-supplier product sync every 60 min
+        "sync-supplier-products-every-60m": {
+            "task":     "workers.tasks_supplier_products.sync_supplier_products",
+            "schedule": _SUPPLIER_SYNC_INTERVAL,
+            "options":  {"expires": _SUPPLIER_SYNC_INTERVAL},
         },
     },
 )

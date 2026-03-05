@@ -583,3 +583,111 @@ SHOPIFY_API_KEY=
 SHOPIFY_API_SECRET=
 SHOPIFY_STORE_DOMAIN=your-store.myshopify.com
 ```
+
+---
+
+## Sprint 7: Multi Supplier Engine
+
+### Overview
+
+Sprint 7 adds multi-supplier support. The system now tracks price and stock for
+**StyleKorean**, **Jolse**, and **OliveYoung** side-by-side and automatically
+picks the cheapest in-stock supplier for each order.
+
+---
+
+### `supplier_products` Table
+
+One row per `(product_id, supplier)` pair.
+
+| Column               | Type         | Description                                  |
+|----------------------|--------------|----------------------------------------------|
+| `id`                 | UUID PK      | Auto-generated                               |
+| `product_id`         | UUID FK      | References `products.id`                     |
+| `supplier`           | TEXT         | `STYLEKOREAN` / `JOLSE` / `OLIVEYOUNG`       |
+| `supplier_product_id`| TEXT         | Supplier-side SKU / product ID               |
+| `price`              | NUMERIC(12,2)| Latest observed price                        |
+| `stock_status`       | TEXT         | `IN_STOCK` / `OUT_OF_STOCK`                  |
+| `last_checked_at`    | TIMESTAMPTZ  | When the row was last refreshed              |
+
+Apply migration:
+
+```bash
+psql $DATABASE_URL -f migrations/0007_supplier_products.sql
+```
+
+---
+
+### Supplier Selection Algorithm
+
+`choose_best_supplier(product_id, session)` in `app/services/supplier_router.py`:
+
+1. Load all `supplier_products` rows for the product.
+2. Filter to `IN_STOCK` only.
+3. Return the row with the **lowest price**.
+4. Tie-breaker: alphabetical supplier name (`JOLSE < OLIVEYOUNG < STYLEKOREAN`).
+5. Returns `None` when no IN_STOCK row exists.
+
+---
+
+### Running the Sync Task Manually
+
+```bash
+# One-off via Celery CLI (worker must be running):
+celery -A app.workers.celery_app call workers.tasks_supplier_products.sync_supplier_products
+
+# One-off directly (useful for debugging):
+python -c "
+import asyncio
+from app.workers.tasks_supplier_products import _run_sync
+print(asyncio.run(_run_sync()))
+"
+```
+
+Celery Beat schedule: **every 60 minutes** (`sync-supplier-products-every-60m`).
+
+---
+
+### New Admin Endpoints
+
+| Method | Path                                       | Description                         |
+|--------|--------------------------------------------|-------------------------------------|
+| GET    | `/admin/suppliers/products/{product_id}`  | Supplier rows for a product          |
+| GET    | `/admin/suppliers/summary`                | Counts by supplier + stock status    |
+
+---
+
+### Testing
+
+```bash
+# Fast suite only (mock-only, no DB/network required):
+make test-fast
+# or:
+pytest -q -m "not integration and not slow" --maxfail=1
+
+# Full suite (requires PostgreSQL + Redis):
+make test
+
+# Sprint 7 tests only:
+pytest tests/test_sprint7_supplier_products.py tests/test_sprint7_supplier_router.py -v
+```
+
+**CI is the final gate.** GitHub Actions must be green before a Sprint 7 release.
+
+---
+
+### New Files (Sprint 7)
+
+```
+app/crawlers/jolse_inventory.py           – Jolse inventory scraper (Playwright, mockable)
+app/crawlers/oliveyoung_inventory.py      – OliveYoung inventory scraper (Playwright, mockable)
+app/models/supplier_product.py            – SupplierProduct ORM model
+app/services/supplier_product_service.py  – CRUD: upsert / get / get_best_supplier
+app/services/supplier_router.py           – choose_best_supplier() + legacy choose_supplier()
+app/suppliers/jolse.py                    – JolseClient (SupplierClient stub)
+app/suppliers/oliveyoung.py               – OliveYoungClient (SupplierClient stub)
+app/workers/tasks_supplier_products.py    – Celery task: sync_supplier_products
+migrations/0007_supplier_products.sql     – Idempotent DB migration
+tests/test_sprint7_supplier_products.py   – 12 mock-only CRUD tests
+tests/test_sprint7_supplier_router.py     – 15 mock-only router + crawler tests
+```

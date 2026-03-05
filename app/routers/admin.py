@@ -615,6 +615,97 @@ async def get_stale_inventory(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SUPPLIERS (Sprint 7)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/suppliers/products/{product_id}",
+    tags=["suppliers"],
+    summary="Supplier products for a given product_id",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_supplier_products_for_product(
+    product_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Return all supplier_products rows for the given product_id.
+
+    Response
+    --------
+    {
+        "product_id": str,
+        "items": [
+            {
+                "supplier":             str,
+                "supplier_product_id":  str,
+                "price":                float | null,
+                "stock_status":         str,
+                "last_checked_at":      str | null,
+            },
+            ...
+        ]
+    }
+    """
+    from app.services.supplier_product_service import get_supplier_products
+    rows = await get_supplier_products(db, product_id)
+    items = [
+        {
+            "supplier":            r.supplier,
+            "supplier_product_id": r.supplier_product_id,
+            "price":               float(r.price) if r.price is not None else None,
+            "stock_status":        r.stock_status,
+            "last_checked_at":     r.last_checked_at.isoformat() if r.last_checked_at else None,
+        }
+        for r in rows
+    ]
+    return {"product_id": str(product_id), "items": items}
+
+
+@router.get(
+    "/suppliers/summary",
+    tags=["suppliers"],
+    summary="Supplier product counts by supplier and stock status",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_supplier_summary(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Aggregate supplier_products rows by supplier and stock_status.
+
+    Response
+    --------
+    {
+        "summary": [
+            {"supplier": "STYLEKOREAN", "stock_status": "IN_STOCK",    "count": 42},
+            {"supplier": "STYLEKOREAN", "stock_status": "OUT_OF_STOCK","count": 3},
+            ...
+        ]
+    }
+    """
+    from sqlalchemy import func as sa_func, select as sa_select
+    from app.models.supplier_product import SupplierProduct
+
+    stmt = (
+        sa_select(
+            SupplierProduct.supplier,
+            SupplierProduct.stock_status,
+            sa_func.count().label("count"),
+        )
+        .group_by(SupplierProduct.supplier, SupplierProduct.stock_status)
+        .order_by(SupplierProduct.supplier, SupplierProduct.stock_status)
+    )
+    result = await db.execute(stmt)
+    rows   = result.all()
+    summary = [
+        {"supplier": r.supplier, "stock_status": r.stock_status, "count": r.count}
+        for r in rows
+    ]
+    return {"summary": summary}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
