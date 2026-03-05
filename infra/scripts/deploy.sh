@@ -32,6 +32,7 @@ NGINX_CONF_SRC="infra/nginx/kbeauty.conf"
 NGINX_CONF_DST="/etc/nginx/sites-available/kbeauty"
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
 UPDATE_ONLY="${1:-}"
+NON_INTERACTIVE="${NON_INTERACTIVE:-0}"  # set to 1 to skip interactive prompts
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -153,7 +154,11 @@ if [[ ! -f "$APP_DIR/.env" ]]; then
     echo "Required values to set:"
     grep "← REQUIRED" "$APP_DIR/.env.production" | sed 's/#.*//' | head -20
     echo ""
-    read -rp "Press ENTER to continue after editing .env, or Ctrl+C to abort..."
+    if [[ "$NON_INTERACTIVE" != "1" ]]; then
+        read -rp "Press ENTER to continue after editing .env, or Ctrl+C to abort..."
+    else
+        warn "NON_INTERACTIVE=1 – skipping prompt. Ensure .env is pre-configured."
+    fi
 else
     log ".env already exists (skipping copy)"
 fi

@@ -87,24 +87,30 @@ def run_migrations() -> None:
     for f in files:
         print(f"  {os.path.basename(f)}")
 
-    # Apply each migration
+    # Apply each migration in its own transaction for idempotency
     applied = 0
     errors  = 0
-    with engine.begin() as conn:
-        for filepath in files:
-            name = os.path.basename(filepath)
-            sql  = open(filepath, encoding="utf-8").read().strip()
-            if not sql:
-                print(f"  [skip]  {name}  (empty)")
-                continue
-            try:
+    for filepath in files:
+        name = os.path.basename(filepath)
+        sql  = open(filepath, encoding="utf-8").read().strip()
+        if not sql:
+            print(f"  [skip]  {name}  (empty)")
+            continue
+        try:
+            with engine.begin() as conn:
                 conn.execute(text(sql))
-                print(f"  [ok]    {name}")
+            print(f"  [ok]    {name}")
+            applied += 1
+        except Exception as exc:
+            err_msg = str(exc)
+            # Treat "already exists" errors as benign (idempotent re-run)
+            if any(kw in err_msg.lower() for kw in ("already exists", "duplicate column", "relation already exists")):
+                print(f"  [skip]  {name}  (already applied – {err_msg.splitlines()[0]})")
                 applied += 1
-            except Exception as exc:
+            else:
                 print(f"  [ERROR] {name}: {exc}")
                 errors += 1
-                raise  # Abort on first error (transaction will rollback)
+                raise  # Abort on unexpected error
 
     print(f"\n[migrate] Done: {applied} applied, {errors} errors.")
     if errors:

@@ -257,7 +257,13 @@ services:
       - kbeauty_internal
     environment:
       NODE_ENV:              production
-      NEXT_PUBLIC_API_URL:   http://127.0.0.1:8000
+      # NEXT_PUBLIC_API_URL is the URL the browser uses to reach the API.
+      # When Nginx proxies /admin/* and /api/* → 127.0.0.1:8000 the
+      # dashboard Next.js rewrites are not needed, but keep this pointing
+      # to the public host so browser-side fetch calls work.
+      NEXT_PUBLIC_API_URL:   http://172.86.127.238
+      # Server-side (SSR) rewrites go directly to the api container
+      API_URL:               http://api:8000
       PORT:                  3001
     ports:
       - "127.0.0.1:3001:3001"      # ← localhost only; Nginx proxies
