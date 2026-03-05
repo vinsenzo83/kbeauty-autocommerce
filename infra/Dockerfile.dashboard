@@ -21,7 +21,7 @@ RUN apk add --no-cache libc6-compat
 # Copy package manifests only (cache-friendly layer)
 COPY dashboard/package.json dashboard/package-lock.json* ./
 
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --legacy-peer-deps
 
 
 # ── Stage 2: Build ────────────────────────────────────────────────────────────
