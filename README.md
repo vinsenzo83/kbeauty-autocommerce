@@ -2240,3 +2240,119 @@ $ pytest -q -m "not integration and not slow" --timeout=30
 - [x] Dashboard `/dashboard/ops` — KPI cards + open alert table + acknowledge/resolve actions
 - [x] 16 mock-only tests — **total 456 passed**, 12 warnings
 - [x] CI green ✅ (Sprints 1–15 unchanged)
+
+---
+
+## Sprint 17 – AI Discovery Engine v2 (Shopify Auto Product Selection)
+
+### Overview
+Sprint 17 implements a fully automated product selection pipeline that scores all canonical products daily using a 5-factor weighted model and publishes the top 20 to Shopify.
+
+### What it does
+1. **Scores** all canonical products with a 5-factor weighted formula
+2. **Generates** `product_candidates_v2` rows (upsert idempotent)
+3. **Surfaces** top-20 candidates via Admin API
+4. **Publishes** top-20 to Shopify via Sprint 12 publish engine
+5. **Marks** published candidates as `status=published`
+6. Runs **daily at 03:00** via Celery beat (DISCOVERY_ENABLED=1)
+7. **dry_run=True** by default for safety
+
+### Score Formula
+```
+score = amazon_rank_score  × 0.35
+      + supplier_rank_score × 0.25
+      + margin_score        × 0.20
+      + review_score        × 0.10
+      + competition_score   × 0.10
+```
+
+All component scores normalised to [0.0, 1.0].
+
+### New Files
+| File | Description |
+|---|---|
+| `migrations/0019_product_candidates_v2.sql` | `product_candidates_v2` table with unique partial index |
+| `app/models/product_candidate_v2.py` | ORM: `ProductCandidateV2`, `CandidateStatusV2` |
+| `app/services/discovery_service_v2.py` | `score_product()`, `generate_candidates()`, `get_top_candidates()`, `reject_candidate()`, `mark_candidate_published()`, `run_discovery_v2()` |
+| `app/workers/tasks_discovery_v2.py` | Celery task `run_discovery_and_publish()` + Redis lock + beat (03:00) |
+| `dashboard/src/app/dashboard/discovery/page.tsx` | Discovery v2 dashboard (score breakdown bars + Reject button) |
+| `tests/test_sprint17_discovery.py` | 22 mock-only tests |
+
+### Modified Files
+| File | Change |
+|---|---|
+| `app/services/publish_service.py` | Added `discover_and_publish_top20()` orchestrator |
+| `app/workers/celery_app.py` | Registered `tasks_discovery_v2` |
+| `app/routers/admin.py` | Added 3 Sprint 17 endpoints |
+
+### Admin API Endpoints
+| Method | Path | Role | Description |
+|---|---|---|---|
+| `GET` | `/admin/discovery/v2/candidates` | VIEWER | List candidates sorted by score |
+| `POST` | `/admin/discovery/v2/run` | OPERATOR | Trigger discovery run |
+| `POST` | `/admin/discovery/v2/candidates/{id}/reject` | OPERATOR | Reject a candidate |
+
+### Beat Schedule
+```
+Daily at 03:00 (DISCOVERY_ENABLED=1)
+dry_run=True by default — set DISCOVERY_ENABLED=1 and dry_run=false for live publish
+```
+
+### Example Commands
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"adminpass"}' | jq -r .access_token)
+
+# 1. List top candidates (default: status=candidate, sorted by score DESC)
+curl "http://localhost:8000/admin/discovery/v2/candidates?limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 2. Run discovery dry-run (score only, no Shopify publish)
+curl -X POST "http://localhost:8000/admin/discovery/v2/run?limit=20&dry_run=true" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 3. Run discovery live (score + publish top-20 to Shopify)
+curl -X POST "http://localhost:8000/admin/discovery/v2/run?limit=20&dry_run=false" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 4. Reject a specific candidate
+CANDIDATE_ID="<uuid-from-candidates-list>"
+curl -X POST "http://localhost:8000/admin/discovery/v2/candidates/${CANDIDATE_ID}/reject?reason=low+margin" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 5. List all candidates (any status)
+curl "http://localhost:8000/admin/discovery/v2/candidates?status=all&limit=50" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+```
+
+### Safety: dry_run Default
+- All admin endpoints and Celery tasks default to `dry_run=True`
+- Live publish requires explicit `dry_run=false`
+- Redis lock (`discovery:run`, TTL 30 min) prevents concurrent runs
+
+### Configuration
+| Env Var | Default | Description |
+|---|---|---|
+| `DISCOVERY_ENABLED` | `0` | Set to `1` to enable Celery beat schedule |
+| `DISCOVERY_LOCK_TTL` | `1800` | Redis lock TTL seconds (30 min) |
+| `DISCOVERY_V2_DAILY_HOUR` | `3` | Daily cron hour (03:00) |
+| `DISCOVERY_V2_DAILY_MINUTE` | `0` | Daily cron minute |
+
+### make test-fast Output
+```
+$ pytest -q -m "not integration and not slow"
+478 passed, 13 warnings in 15.42s
+```
+
+### Definition of Done — Sprint 17
+- [x] `migrations/0019_product_candidates_v2.sql` — idempotent, unique partial index
+- [x] ORM: `ProductCandidateV2`, `CandidateStatusV2`
+- [x] `discovery_service_v2.py` — `score_product()` formula, `generate_candidates()` (upsert idempotent), `get_top_candidates()`, `reject_candidate()`, `mark_candidate_published()`
+- [x] `publish_service.py` — `discover_and_publish_top20()` orchestrator (idempotent)
+- [x] `tasks_discovery_v2.py` — Celery task + Redis lock + beat 03:00
+- [x] `celery_app.py` — `tasks_discovery_v2` registered
+- [x] Admin API: GET /discovery/v2/candidates, POST /discovery/v2/run, POST /discovery/v2/candidates/{id}/reject
+- [x] Dashboard `/dashboard/discovery` — v2 with score bars, Run/Reject buttons
+- [x] 22 mock-only tests — **total 478 passed**, 13 warnings
+- [x] CI green ✅ (Sprints 1–16 unchanged)

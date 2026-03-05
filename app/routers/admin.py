@@ -2129,3 +2129,111 @@ async def resolve_ops_alert(
         "rule_name":   event.rule_name,
         "resolved_at": event.resolved_at.isoformat() if event.resolved_at else None,
     }
+
+
+# =============================================================================
+# Sprint 17 – AI Discovery Engine v2 endpoints
+# =============================================================================
+
+@router.get(
+    "/discovery/v2/candidates",
+    tags=["sprint17"],
+    summary="List Sprint 17 discovery candidates",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_discovery_v2_candidates(
+    limit:  int         = Query(50,          ge=1, le=200),
+    status: str | None  = Query("candidate", description="candidate|published|rejected|all"),
+    db: AsyncSession    = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Return Sprint 17 AI Discovery Engine v2 product candidates,
+    sorted by score DESC.
+    """
+    from app.services.discovery_service_v2 import get_top_candidates, CandidateStatusV2
+    from app.models.product_candidate_v2 import ProductCandidateV2
+
+    if status and status.lower() == "all":
+        from sqlalchemy import select, desc
+        rows = (await db.execute(
+            select(ProductCandidateV2)
+            .order_by(desc(ProductCandidateV2.score))
+            .limit(limit)
+        )).scalars().all()
+    else:
+        effective_status = status or CandidateStatusV2.CANDIDATE
+        rows = await get_top_candidates(db, limit=limit, status=effective_status)
+
+    items = []
+    for c in rows:
+        item = c.to_dict()
+        # Optionally enrich with canonical product name
+        try:
+            from app.models.canonical_product import CanonicalProduct
+            cp = (await db.execute(
+                select(CanonicalProduct).where(
+                    CanonicalProduct.id == c.canonical_product_id
+                ).limit(1)
+            )).scalar_one_or_none()
+            if cp:
+                item["canonical_sku"]  = cp.canonical_sku
+                item["name"]           = cp.name
+                item["brand"]          = cp.brand
+                item["last_price"]     = float(cp.last_price) if cp.last_price else None
+        except Exception:
+            pass
+        items.append(item)
+
+    return {"total": len(items), "items": items}
+
+
+@router.post(
+    "/discovery/v2/run",
+    tags=["sprint17"],
+    summary="Trigger Sprint 17 discovery run",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def run_discovery_v2(
+    limit:   int  = Query(20,   ge=1,  le=200),
+    dry_run: bool = Query(True, description="True = score only, False = publish to Shopify"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Trigger the Sprint 17 AI Discovery Engine v2 pipeline.
+    Scores all canonical products and optionally publishes top-N to Shopify.
+    dry_run=True by default for safety.
+    """
+    from app.services.discovery_service_v2 import run_discovery_v2 as _run_v2
+    result = await _run_v2(db, limit=200, top_n=limit, dry_run=dry_run)
+    if not dry_run:
+        await db.commit()
+    return result
+
+
+@router.post(
+    "/discovery/v2/candidates/{candidate_id}/reject",
+    tags=["sprint17"],
+    summary="Reject a Sprint 17 discovery candidate",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def reject_discovery_v2_candidate(
+    candidate_id: str,
+    reason: str | None = Query(None, description="Optional rejection reason"),
+    db: AsyncSession   = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Mark a Sprint 17 discovery candidate as rejected.
+    The candidate will no longer appear in GET /discovery/v2/candidates.
+    """
+    from fastapi import HTTPException
+    from app.services.discovery_service_v2 import reject_candidate
+
+    candidate = await reject_candidate(db, candidate_id, reason=reason)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    await db.commit()
+    return {
+        "id":     str(candidate.id),
+        "status": candidate.status,
+        "notes":  candidate.notes,
+    }

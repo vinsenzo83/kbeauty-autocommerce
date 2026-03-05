@@ -587,3 +587,91 @@ async def get_top_candidates(
         })
 
     return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 17 – AI Discovery Engine v2: discover_and_publish_top20
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def discover_and_publish_top20(
+    session: AsyncSession,
+    *,
+    limit: int = 20,
+    dry_run: bool = True,
+    shopify_service=None,
+    job_id: str | None = None,
+) -> "PublishJobResult":
+    """
+    Sprint 17 orchestrator: pull top-N candidates from the v2 discovery pipeline
+    and publish them to Shopify.
+
+    Idempotency
+    -----------
+    Checks existing PublishJobItems for each canonical_product_id.
+    If an active (non-dry-run) publish item already exists, skips the product
+    to avoid duplicate Shopify listings.
+
+    Parameters
+    ----------
+    session        : Async SQLAlchemy session
+    limit          : Max candidates to publish (default 20)
+    dry_run        : If True, simulate without writing to Shopify (default True)
+    shopify_service: Injected Shopify service (defaults to ShopifyProductService)
+    job_id         : Optional pre-created job UUID string
+
+    Returns
+    -------
+    PublishJobResult with statistics
+    """
+    from app.services.discovery_service_v2 import (
+        get_top_candidates,
+        mark_candidate_published,
+        CandidateStatusV2,
+    )
+    from app.models.product_candidate_v2 import ProductCandidateV2
+
+    # Fetch top candidates from v2 discovery pipeline
+    top_candidates = await get_top_candidates(session, limit=limit)
+
+    if not top_candidates:
+        logger.info("discover_and_publish_top20.no_candidates")
+        # Fall back to standard publish logic
+        return await publish_top_products_to_shopify(
+            session,
+            limit=limit,
+            dry_run=dry_run,
+            shopify_service=shopify_service,
+            job_id=job_id,
+        )
+
+    # Extract canonical product IDs from top candidates
+    candidate_ids = [c.canonical_product_id for c in top_candidates]
+
+    # Run publish using existing Sprint 12 engine
+    result = await publish_top_products_to_shopify(
+        session,
+        limit=limit,
+        dry_run=dry_run,
+        shopify_service=shopify_service,
+        job_id=job_id,
+        candidate_ids=candidate_ids,
+    )
+
+    # Mark candidates as published on success (only for live runs)
+    if not dry_run and result.published > 0:
+        for c in top_candidates:
+            await mark_candidate_published(
+                session,
+                canonical_product_id=c.canonical_product_id,
+                notes=f"Published via Sprint 17 discovery pipeline (job={result.job_id})",
+            )
+
+    logger.info(
+        "discover_and_publish_top20.complete",
+        dry_run=dry_run,
+        candidates=len(top_candidates),
+        published=result.published,
+        skipped=result.skipped,
+        failed=result.failed,
+    )
+    return result

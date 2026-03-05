@@ -26,6 +26,7 @@ celery_app = Celery(
         "app.workers.tasks_fulfillment",       # Sprint 14
         "app.workers.tasks_discovery",         # Sprint 15
         "app.workers.tasks_monitoring",        # Sprint 16
+        "app.workers.tasks_discovery_v2",      # Sprint 17
     ],
 )
 

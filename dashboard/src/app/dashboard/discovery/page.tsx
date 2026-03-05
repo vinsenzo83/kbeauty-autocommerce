@@ -2,59 +2,59 @@
 import { useEffect, useState, useCallback } from "react";
 
 // ── API types ─────────────────────────────────────────────────────────────────
-interface TrendSignal {
-  id: string;
-  source: string;
-  external_id: string;
-  name: string;
-  brand: string | null;
-  category: string | null;
-  trend_score: number;
-  collected_at: string | null;
-}
 
-interface ProductCandidate {
+interface CandidateV2 {
   id: string;
   canonical_product_id: string;
-  trend_score: number;
+  canonical_sku?: string;
+  name?: string;
+  brand?: string | null;
+  last_price?: number | null;
+  score: number;
+  amazon_rank_score: number;
+  supplier_rank_score: number;
   margin_score: number;
+  review_score: number;
   competition_score: number;
-  supplier_score: number;
-  content_score: number;
-  final_score: number;
   status: string;
-  notes: string | null;
-  created_at: string | null;
+  notes?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 interface DiscoveryRunResult {
-  status: string;
   dry_run: boolean;
-  signals_collected: number;
-  signals_matched: number;
-  candidates_created: number;
-  candidates_updated: number;
-  candidates_rejected: number;
-  top_count: number;
-  top_candidates: ProductCandidate[];
-  errors: string[];
+  candidates_generated: number;
+  top_n: number;
+  top_candidates: CandidateV2[];
+}
+
+interface CandidateListResult {
+  total: number;
+  items: CandidateV2[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const token =
-    typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...opts,
+function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("admin_token");
+}
+
+async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken();
+  const res = await fetch(`/admin${path}`, {
+    ...options,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(opts?.headers ?? {}),
+      ...(options?.headers ?? {}),
     },
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`${res.status}: ${text}`);
+  }
   return res.json();
 }
 
@@ -66,39 +66,21 @@ function fmtScore(v: number | null | undefined) {
   return v != null ? (v * 100).toFixed(1) + "%" : "—";
 }
 
-function scoreColor(v: number): string {
-  if (v >= 0.7) return "text-green-600 font-semibold";
-  if (v >= 0.4) return "text-yellow-600";
-  return "text-red-500";
-}
-
-const SOURCE_BADGE: Record<string, string> = {
-  tiktok:              "bg-pink-100 text-pink-700",
-  amazon_bestsellers:  "bg-orange-100 text-orange-700",
-};
-
-function SourceBadge({ source }: { source: string }) {
-  return (
-    <span
-      className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
-        SOURCE_BADGE[source] ?? "bg-gray-100 text-gray-600"
-      }`}
-    >
-      {source === "tiktok" ? "TikTok" : source === "amazon_bestsellers" ? "Amazon" : source}
-    </span>
-  );
+function fmtPrice(v: number | null | undefined) {
+  return v != null ? `$${v.toFixed(2)}` : "—";
 }
 
 const STATUS_PILL: Record<string, string> = {
   candidate: "bg-blue-100 text-blue-700",
   published: "bg-green-100 text-green-700",
-  rejected:  "bg-gray-100 text-gray-400",
+  rejected:  "bg-red-100  text-red-700",
 };
-function StatusPill({ status }: { status: string }) {
+
+function Pill({ status }: { status: string }) {
   return (
     <span
       className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
-        STATUS_PILL[status] ?? "bg-gray-100 text-gray-600"
+        STATUS_PILL[status] ?? "bg-gray-100 text-gray-500"
       }`}
     >
       {status}
@@ -106,426 +88,400 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-// ── ScoreBar component ────────────────────────────────────────────────────────
-function ScoreBar({ value, label }: { value: number; label: string }) {
-  const pct = Math.round(value * 100);
-  const color =
-    pct >= 70 ? "bg-green-500" : pct >= 40 ? "bg-yellow-400" : "bg-red-400";
+// Score bar component
+function ScoreBar({ value, color = "bg-blue-500" }: { value: number; color?: string }) {
+  const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="w-20 text-gray-500 shrink-0">{label}</span>
-      <div className="flex-1 bg-gray-100 rounded h-2">
-        <div className={`${color} h-2 rounded`} style={{ width: `${pct}%` }} />
+    <div className="flex items-center gap-2">
+      <div className="w-20 h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div className={`h-full ${color} rounded-full`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-8 text-right text-gray-600">{pct}%</span>
+      <span className="text-xs text-gray-600 w-8">{pct}%</span>
     </div>
   );
 }
 
-// ── CandidateDetail Modal ─────────────────────────────────────────────────────
-function CandidateModal({
+// Candidate detail drawer
+function CandidateDrawer({
   candidate,
   onClose,
-  onPublish,
+  onReject,
 }: {
-  candidate: ProductCandidate;
+  candidate: CandidateV2;
   onClose: () => void;
-  onPublish: (id: string, dryRun: boolean) => Promise<void>;
+  onReject: (id: string) => Promise<void>;
 }) {
-  const [publishing, setPublishing] = useState(false);
-  const [pubResult, setPubResult] = useState<string | null>(null);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
 
-  const handlePublish = async (dryRun: boolean) => {
-    setPublishing(true);
-    setPubResult(null);
+  async function handleReject() {
+    setRejecting(true);
     try {
-      const res = await apiFetch<{ publish_status: string; published_count: number }>(
-        `/admin/discovery/publish/${candidate.id}?dry_run=${dryRun}`,
-        { method: "POST" }
-      );
-      setPubResult(
-        `✅ ${dryRun ? "[DRY RUN] " : ""}publish_status=${res.publish_status} published=${res.published_count}`
-      );
-      await onPublish(candidate.id, dryRun);
-    } catch (e: unknown) {
-      setPubResult(`❌ ${e instanceof Error ? e.message : String(e)}`);
+      await onReject(candidate.id);
+      onClose();
     } finally {
-      setPublishing(false);
+      setRejecting(false);
     }
-  };
+  }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg">
-        <div className="flex items-center justify-between p-4 border-b">
-          <h2 className="font-bold text-lg">Candidate Detail</h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-2xl"
-          >
-            ×
-          </button>
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6 space-y-4">
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">
+              {candidate.name ?? candidate.canonical_sku ?? candidate.canonical_product_id.slice(0, 8)}
+            </h2>
+            {candidate.brand && (
+              <p className="text-sm text-gray-500">{candidate.brand}</p>
+            )}
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
         </div>
-        <div className="p-5 space-y-4">
-          <div className="text-xs text-gray-400 break-all">
-            canonical_id: {candidate.canonical_product_id}
-          </div>
-          <div className="space-y-2">
-            <ScoreBar value={candidate.trend_score}       label="Trend"       />
-            <ScoreBar value={candidate.margin_score}      label="Margin"      />
-            <ScoreBar value={candidate.competition_score} label="Competition" />
-            <ScoreBar value={candidate.supplier_score}    label="Supplier"    />
-            <ScoreBar value={candidate.content_score}     label="Content"     />
-          </div>
-          <div className="flex items-center gap-2 pt-1">
-            <span className="font-bold text-sm text-gray-700">Final Score:</span>
-            <span className={`text-lg font-bold ${scoreColor(candidate.final_score)}`}>
-              {fmtScore(candidate.final_score)}
-            </span>
-            <StatusPill status={candidate.status} />
-          </div>
-          {candidate.notes && (
-            <p className="text-xs text-gray-500 italic">{candidate.notes}</p>
-          )}
-          <p className="text-xs text-gray-400">Created: {fmtDate(candidate.created_at)}</p>
 
-          {candidate.status === "candidate" && (
-            <div className="flex gap-2 pt-2">
-              <button
-                onClick={() => handlePublish(true)}
-                disabled={publishing}
-                className="flex-1 bg-yellow-400 hover:bg-yellow-500 text-white text-sm font-semibold py-2 rounded-lg disabled:opacity-50"
-              >
-                {publishing ? "…" : "Dry Run Publish"}
-              </button>
-              <button
-                onClick={() => handlePublish(false)}
-                disabled={publishing}
-                className="flex-1 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 rounded-lg disabled:opacity-50"
-              >
-                {publishing ? "…" : "🚀 Live Publish"}
-              </button>
+        {/* Score breakdown */}
+        <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">Score Breakdown</h3>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <span className="text-gray-500">Amazon Rank</span>
+              <div className="mt-1"><ScoreBar value={candidate.amazon_rank_score} color="bg-orange-400" /></div>
             </div>
-          )}
-          {pubResult && (
-            <p className="text-xs font-mono bg-gray-50 p-2 rounded border">{pubResult}</p>
-          )}
+            <div>
+              <span className="text-gray-500">Supplier Rank</span>
+              <div className="mt-1"><ScoreBar value={candidate.supplier_rank_score} color="bg-purple-400" /></div>
+            </div>
+            <div>
+              <span className="text-gray-500">Margin</span>
+              <div className="mt-1"><ScoreBar value={candidate.margin_score} color="bg-green-500" /></div>
+            </div>
+            <div>
+              <span className="text-gray-500">Review</span>
+              <div className="mt-1"><ScoreBar value={candidate.review_score} color="bg-yellow-400" /></div>
+            </div>
+            <div>
+              <span className="text-gray-500">Competition</span>
+              <div className="mt-1"><ScoreBar value={candidate.competition_score} color="bg-red-400" /></div>
+            </div>
+            <div className="col-span-2 pt-1 border-t border-gray-200">
+              <span className="text-gray-700 font-semibold">Final Score</span>
+              <div className="mt-1"><ScoreBar value={candidate.score} color="bg-blue-600" /></div>
+            </div>
+          </div>
         </div>
+
+        {/* Metadata */}
+        <div className="text-sm text-gray-600 grid grid-cols-2 gap-1">
+          <span className="text-gray-400">SKU</span><span>{candidate.canonical_sku ?? "—"}</span>
+          <span className="text-gray-400">Price</span><span>{fmtPrice(candidate.last_price)}</span>
+          <span className="text-gray-400">Status</span><span><Pill status={candidate.status} /></span>
+          <span className="text-gray-400">Created</span><span>{fmtDate(candidate.created_at)}</span>
+        </div>
+
+        {candidate.notes && (
+          <p className="text-xs text-gray-400 italic">{candidate.notes}</p>
+        )}
+
+        {/* Actions */}
+        {candidate.status === "candidate" && (
+          <div className="flex gap-2 pt-2 border-t border-gray-100">
+            <textarea
+              className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs resize-none h-8"
+              placeholder="Rejection reason (optional)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <button
+              onClick={handleReject}
+              disabled={rejecting}
+              className="px-3 py-1 rounded bg-red-500 text-white text-xs font-semibold hover:bg-red-600 disabled:opacity-50"
+            >
+              {rejecting ? "Rejecting…" : "Reject"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
-export default function DiscoveryPage() {
-  const [tab, setTab] = useState<"candidates" | "trends">("candidates");
 
-  // Candidates state
-  const [candidates, setCandidates] = useState<ProductCandidate[]>([]);
-  const [candLoading, setCandLoading] = useState(true);
-  const [candError, setCandError]   = useState<string | null>(null);
-  const [selectedCand, setSelectedCand] = useState<ProductCandidate | null>(null);
+export default function DiscoveryV2Page() {
+  const [candidates, setCandidates]       = useState<CandidateV2[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [running, setRunning]             = useState(false);
+  const [error, setError]                 = useState<string | null>(null);
+  const [runResult, setRunResult]         = useState<DiscoveryRunResult | null>(null);
+  const [statusFilter, setStatusFilter]   = useState<string>("candidate");
+  const [selectedCandidate, setSelected]  = useState<CandidateV2 | null>(null);
+  const [lastRefreshed, setLastRefreshed] = useState<string>("");
 
-  // Trends state
-  const [trends, setTrends]         = useState<TrendSignal[]>([]);
-  const [trendLoading, setTrendLoading] = useState(true);
-  const [trendError, setTrendError] = useState<string | null>(null);
-
-  // Run pipeline state
-  const [running, setRunning]       = useState(false);
-  const [runResult, setRunResult]   = useState<DiscoveryRunResult | null>(null);
-  const [runError, setRunError]     = useState<string | null>(null);
-
-  // Load candidates
-  const loadCandidates = useCallback(async () => {
-    setCandLoading(true);
-    setCandError(null);
+  const loadCandidates = useCallback(async (status = statusFilter) => {
+    setLoading(true);
+    setError(null);
     try {
-      const data = await apiFetch<{ total: number; items: ProductCandidate[] }>(
-        "/admin/discovery/candidates?limit=50"
+      const data = await apiFetch<CandidateListResult>(
+        `/discovery/v2/candidates?limit=50&status=${status}`
       );
-      setCandidates(data.items);
+      setCandidates(data.items ?? []);
+      setLastRefreshed(new Date().toLocaleTimeString());
     } catch (e: unknown) {
-      setCandError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setCandLoading(false);
+      setLoading(false);
     }
-  }, []);
+  }, [statusFilter]);
 
-  // Load trends
-  const loadTrends = useCallback(async () => {
-    setTrendLoading(true);
-    setTrendError(null);
-    try {
-      const data = await apiFetch<{ total: number; items: TrendSignal[] }>(
-        "/admin/discovery/trends?limit=50"
-      );
-      setTrends(data.items);
-    } catch (e: unknown) {
-      setTrendError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setTrendLoading(false);
-    }
-  }, []);
+  useEffect(() => { loadCandidates(); }, [loadCandidates]);
 
-  useEffect(() => {
-    loadCandidates();
-    loadTrends();
-  }, [loadCandidates, loadTrends]);
-
-  // Run discovery pipeline
-  const handleRun = async (dryRun: boolean) => {
+  async function handleRun(dry: boolean) {
     setRunning(true);
+    setError(null);
     setRunResult(null);
-    setRunError(null);
     try {
       const data = await apiFetch<DiscoveryRunResult>(
-        `/admin/discovery/run?dry_run=${dryRun}&top_n=50`,
+        `/discovery/v2/run?limit=20&dry_run=${dry}`,
         { method: "POST" }
       );
       setRunResult(data);
-      // Refresh data after successful live run
-      if (!dryRun) {
-        await loadCandidates();
-        await loadTrends();
-      }
+      await loadCandidates();
     } catch (e: unknown) {
-      setRunError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setRunning(false);
     }
-  };
+  }
+
+  async function handleReject(candidateId: string) {
+    const reason = (window.prompt("Rejection reason (optional):") || undefined);
+    await apiFetch(
+      `/discovery/v2/candidates/${candidateId}/reject${reason ? `?reason=${encodeURIComponent(reason)}` : ""}`,
+      { method: "POST" }
+    );
+    await loadCandidates();
+  }
+
+  // Stats
+  const total      = candidates.length;
+  const published  = candidates.filter((c) => c.status === "published").length;
+  const rejected   = candidates.filter((c) => c.status === "rejected").length;
+  const avgScore   = total > 0
+    ? candidates.reduce((s, c) => s + c.score, 0) / total
+    : 0;
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">
-            🔍 AI Product Discovery
+          <h1 className="text-2xl font-bold text-gray-900">
+            🤖 AI Discovery Engine v2
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Sprint 15 — Trend signals → Scored candidates → Shopify publish
+            Sprint 17 – Automated top-20 product selection pipeline
           </p>
         </div>
         <div className="flex gap-2">
           <button
             onClick={() => handleRun(true)}
             disabled={running}
-            className="bg-yellow-400 hover:bg-yellow-500 text-white text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 transition"
+            className="px-4 py-2 rounded-lg bg-blue-100 text-blue-700 text-sm font-semibold hover:bg-blue-200 disabled:opacity-50"
           >
-            {running ? "⏳ Running…" : "🧪 Dry Run"}
+            {running ? "Running…" : "🔍 Run Dry-Run"}
           </button>
           <button
             onClick={() => handleRun(false)}
             disabled={running}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 transition"
+            className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
           >
-            {running ? "⏳ Running…" : "▶ Run Discovery"}
+            {running ? "Running…" : "🚀 Run Live"}
+          </button>
+          <button
+            onClick={() => loadCandidates()}
+            disabled={loading}
+            className="px-3 py-2 rounded-lg border border-gray-200 text-gray-500 text-sm hover:bg-gray-50 disabled:opacity-50"
+          >
+            ↻
           </button>
         </div>
       </div>
 
-      {/* Run result banner */}
-      {runError && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
-          ❌ {runError}
-        </div>
-      )}
-      {runResult && (
-        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4 text-sm space-y-1">
-          <p className="font-semibold text-indigo-800">
-            {runResult.dry_run ? "🧪 Dry Run" : "✅ Live Run"} Complete
-          </p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-2">
-            {[
-              ["Signals Collected", runResult.signals_collected],
-              ["Matched to Canonical", runResult.signals_matched],
-              ["Candidates Created", runResult.candidates_created],
-              ["Candidates Updated", runResult.candidates_updated],
-            ].map(([label, val]) => (
-              <div key={String(label)} className="bg-white rounded p-2 text-center border border-indigo-100">
-                <p className="text-xl font-bold text-indigo-700">{val}</p>
-                <p className="text-xs text-gray-500">{label}</p>
-              </div>
-            ))}
+      {/* Stats cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: "Total Candidates", value: total,                     color: "text-blue-600" },
+          { label: "Published",        value: published,                  color: "text-green-600" },
+          { label: "Rejected",         value: rejected,                   color: "text-red-500" },
+          { label: "Avg Score",        value: fmtScore(avgScore / 100),   color: "text-purple-600" },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+            <p className="text-xs text-gray-400">{label}</p>
+            <p className={`text-2xl font-bold ${color}`}>{value}</p>
           </div>
-          {runResult.errors.length > 0 && (
-            <details className="mt-2">
-              <summary className="text-xs text-red-600 cursor-pointer">
-                {runResult.errors.length} errors
-              </summary>
-              <ul className="mt-1 space-y-0.5">
-                {runResult.errors.map((e, i) => (
-                  <li key={i} className="text-xs text-red-500 font-mono">{e}</li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="border-b flex gap-4">
-        {(["candidates", "trends"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`pb-2 text-sm font-medium capitalize border-b-2 transition ${
-              tab === t
-                ? "border-indigo-600 text-indigo-700"
-                : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            {t === "candidates" ? `📋 Candidates (${candidates.length})` : `📡 Trend Signals (${trends.length})`}
-          </button>
         ))}
       </div>
 
-      {/* Candidates Tab */}
-      {tab === "candidates" && (
-        <div>
-          {candLoading ? (
-            <p className="text-gray-500 text-sm py-6 text-center">Loading candidates…</p>
-          ) : candError ? (
-            <p className="text-red-500 text-sm py-4">Error: {candError}</p>
-          ) : candidates.length === 0 ? (
-            <div className="text-center py-10 text-gray-400">
-              <p className="text-4xl mb-2">🔍</p>
-              <p className="text-sm">No candidates yet. Click "Run Discovery" to start.</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded-xl border shadow-sm">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wide">
-                  <tr>
-                    <th className="px-4 py-3 text-left">Canonical ID</th>
-                    <th className="px-4 py-3 text-right">Trend</th>
-                    <th className="px-4 py-3 text-right">Margin</th>
-                    <th className="px-4 py-3 text-right">Competition</th>
-                    <th className="px-4 py-3 text-right">Supplier</th>
-                    <th className="px-4 py-3 text-right">Content</th>
-                    <th className="px-4 py-3 text-right font-bold">Final</th>
-                    <th className="px-4 py-3 text-center">Status</th>
-                    <th className="px-4 py-3 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {candidates.map((c) => (
-                    <tr
-                      key={c.id}
-                      className="hover:bg-indigo-50 cursor-pointer transition"
-                      onClick={() => setSelectedCand(c)}
-                    >
-                      <td className="px-4 py-3 font-mono text-xs text-gray-500 max-w-[160px] truncate">
-                        {c.canonical_product_id.slice(0, 8)}…
-                      </td>
-                      <td className={`px-4 py-3 text-right ${scoreColor(c.trend_score)}`}>
-                        {fmtScore(c.trend_score)}
-                      </td>
-                      <td className={`px-4 py-3 text-right ${scoreColor(c.margin_score)}`}>
-                        {fmtScore(c.margin_score)}
-                      </td>
-                      <td className={`px-4 py-3 text-right ${scoreColor(c.competition_score)}`}>
-                        {fmtScore(c.competition_score)}
-                      </td>
-                      <td className={`px-4 py-3 text-right ${scoreColor(c.supplier_score)}`}>
-                        {fmtScore(c.supplier_score)}
-                      </td>
-                      <td className={`px-4 py-3 text-right ${scoreColor(c.content_score)}`}>
-                        {fmtScore(c.content_score)}
-                      </td>
-                      <td className={`px-4 py-3 text-right text-base font-bold ${scoreColor(c.final_score)}`}>
-                        {fmtScore(c.final_score)}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <StatusPill status={c.status} />
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        {c.status === "candidate" && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setSelectedCand(c); }}
-                            className="text-xs bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded transition"
-                          >
-                            Publish
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+      {/* Score formula info */}
+      <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-800">
+        <strong>Score formula:</strong> score = Amazon×0.35 + Supplier×0.25 + Margin×0.20 + Review×0.10 + Competition×0.10
+      </div>
+
+      {/* Run result */}
+      {runResult && (
+        <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+          <h3 className="font-semibold text-green-800 mb-2">
+            {runResult.dry_run ? "🔍 Dry-Run" : "🚀 Live Run"} completed
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm text-green-700">
+            <span>Candidates generated: <strong>{runResult.candidates_generated}</strong></span>
+            <span>Top N: <strong>{runResult.top_n}</strong></span>
+          </div>
+          {runResult.top_candidates?.length > 0 && (
+            <div className="mt-2 text-xs text-green-600">
+              Top scores: {runResult.top_candidates.slice(0, 5).map((c) =>
+                `${(c.score * 100).toFixed(0)}%`
+              ).join(", ")}
             </div>
           )}
         </div>
       )}
 
-      {/* Trends Tab */}
-      {tab === "trends" && (
-        <div>
-          {trendLoading ? (
-            <p className="text-gray-500 text-sm py-6 text-center">Loading trends…</p>
-          ) : trendError ? (
-            <p className="text-red-500 text-sm py-4">Error: {trendError}</p>
-          ) : trends.length === 0 ? (
-            <div className="text-center py-10 text-gray-400">
-              <p className="text-4xl mb-2">📡</p>
-              <p className="text-sm">No trend signals yet. Run Discovery to collect signals.</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded-xl border shadow-sm">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wide">
-                  <tr>
-                    <th className="px-4 py-3 text-left">Source</th>
-                    <th className="px-4 py-3 text-left">Product Name</th>
-                    <th className="px-4 py-3 text-left">Brand</th>
-                    <th className="px-4 py-3 text-left">Category</th>
-                    <th className="px-4 py-3 text-right">Trend Score</th>
-                    <th className="px-4 py-3 text-right">Collected</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {trends.map((t) => (
-                    <tr key={t.id} className="hover:bg-gray-50 transition">
-                      <td className="px-4 py-3">
-                        <SourceBadge source={t.source} />
-                      </td>
-                      <td className="px-4 py-3 max-w-xs">
-                        <p className="truncate font-medium text-gray-800">{t.name}</p>
-                        <p className="text-xs text-gray-400 font-mono">{t.external_id}</p>
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">{t.brand ?? "—"}</td>
-                      <td className="px-4 py-3 text-gray-500 text-xs">{t.category ?? "—"}</td>
-                      <td className="px-4 py-3 text-right">
-                        <span className={`font-bold ${scoreColor(t.trend_score / 10)}`}>
-                          {t.trend_score.toFixed(2)}
-                        </span>
-                        <span className="text-xs text-gray-400 ml-1">/ 10</span>
-                      </td>
-                      <td className="px-4 py-3 text-right text-xs text-gray-400">
-                        {fmtDate(t.collected_at)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+      {/* Error */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-3 text-sm">
+          {error}
         </div>
       )}
 
-      {/* Candidate Detail Modal */}
-      {selectedCand && (
-        <CandidateModal
-          candidate={selectedCand}
-          onClose={() => setSelectedCand(null)}
-          onPublish={async (_id, _dryRun) => {
-            await loadCandidates();
-            setSelectedCand(null);
-          }}
+      {/* Filter */}
+      <div className="flex items-center gap-3">
+        <span className="text-sm text-gray-500">Filter:</span>
+        {["candidate", "published", "rejected", "all"].map((s) => (
+          <button
+            key={s}
+            onClick={() => { setStatusFilter(s); loadCandidates(s); }}
+            className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+              statusFilter === s
+                ? "bg-indigo-600 text-white border-indigo-600"
+                : "bg-white text-gray-500 border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            {s}
+          </button>
+        ))}
+        {lastRefreshed && (
+          <span className="ml-auto text-xs text-gray-300">Refreshed {lastRefreshed}</span>
+        )}
+      </div>
+
+      {/* Candidate table */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+        {loading ? (
+          <div className="p-12 text-center text-gray-400 text-sm">Loading candidates…</div>
+        ) : candidates.length === 0 ? (
+          <div className="p-12 text-center space-y-2">
+            <p className="text-gray-400 text-sm">No candidates found.</p>
+            <p className="text-gray-300 text-xs">
+              Run the discovery pipeline to generate product candidates.
+            </p>
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-100">
+              <tr>
+                {["Product", "Score", "Amazon", "Supplier", "Margin", "Review", "Comp.", "Price", "Status", ""].map(
+                  (h) => (
+                    <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500">
+                      {h}
+                    </th>
+                  )
+                )}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {candidates.map((c) => (
+                <tr
+                  key={c.id}
+                  className="hover:bg-gray-50 transition-colors cursor-pointer"
+                  onClick={() => setSelected(c)}
+                >
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-gray-900 truncate max-w-[180px]">
+                      {c.name ?? c.canonical_sku ?? c.canonical_product_id.slice(0, 8)}
+                    </div>
+                    {c.brand && (
+                      <div className="text-xs text-gray-400">{c.brand}</div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1">
+                      <div
+                        className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white"
+                        style={{
+                          background: `hsl(${Math.round(c.score * 120)},70%,50%)`,
+                        }}
+                      >
+                        {Math.round(c.score * 100)}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-500">
+                    {(c.amazon_rank_score * 100).toFixed(0)}%
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-500">
+                    {(c.supplier_rank_score * 100).toFixed(0)}%
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-500">
+                    {(c.margin_score * 100).toFixed(0)}%
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-500">
+                    {(c.review_score * 100).toFixed(0)}%
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-500">
+                    {(c.competition_score * 100).toFixed(0)}%
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-500">
+                    {fmtPrice(c.last_price)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <Pill status={c.status} />
+                  </td>
+                  <td className="px-4 py-3">
+                    {c.status === "candidate" && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleReject(c.id); }}
+                        className="text-xs px-2 py-0.5 rounded border border-red-200 text-red-500 hover:bg-red-50"
+                      >
+                        Reject
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Candidate drawer */}
+      {selectedCandidate && (
+        <CandidateDrawer
+          candidate={selectedCandidate}
+          onClose={() => setSelected(null)}
+          onReject={handleReject}
         />
       )}
+
+      {/* Instructions */}
+      <div className="bg-gray-50 rounded-xl p-4 text-xs text-gray-500 space-y-1">
+        <p><strong>🔍 Run Dry-Run</strong> — Score all canonical products without publishing to Shopify.</p>
+        <p><strong>🚀 Run Live</strong> — Score + publish top-20 to Shopify (requires SHOPIFY_ACCESS_TOKEN).</p>
+        <p><strong>Reject</strong> — Mark a candidate as rejected; it will be excluded from future auto-publish.</p>
+        <p className="text-gray-400">
+          Score formula: Amazon×0.35 + Supplier×0.25 + Margin×0.20 + Review×0.10 + Competition×0.10
+        </p>
+      </div>
     </div>
   );
 }
