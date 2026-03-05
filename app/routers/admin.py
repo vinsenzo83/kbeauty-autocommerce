@@ -929,6 +929,186 @@ async def trigger_pricing_sync_for_canonical(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Sprint 9: Multi-Channel Commerce Engine
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/channels",
+    tags=["channels"],
+    summary="List all sales channels",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_channels(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return all rows from sales_channels."""
+    from sqlalchemy import select
+    from app.models.sales_channel import SalesChannel
+
+    result = await db.execute(select(SalesChannel).order_by(SalesChannel.name))
+    channels = result.scalars().all()
+    return {
+        "channels": [
+            {
+                "id":         str(c.id),
+                "name":       c.name,
+                "type":       c.type,
+                "enabled":    c.enabled,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in channels
+        ]
+    }
+
+
+@router.get(
+    "/channels/products/{canonical_id}",
+    tags=["channels"],
+    summary="Get channel listings for a canonical product",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_channel_products(
+    canonical_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return channel_products rows for a given canonical_product_id."""
+    from sqlalchemy import select
+    from app.models.sales_channel import ChannelProduct
+
+    result = await db.execute(
+        select(ChannelProduct)
+        .where(ChannelProduct.canonical_product_id == canonical_id)
+        .order_by(ChannelProduct.channel)
+    )
+    rows = result.scalars().all()
+    return {
+        "canonical_product_id": str(canonical_id),
+        "channel_products": [
+            {
+                "id":                   str(r.id),
+                "channel":              r.channel,
+                "external_product_id":  r.external_product_id,
+                "external_variant_id":  r.external_variant_id,
+                "price":                str(r.price) if r.price else None,
+                "currency":             r.currency,
+                "status":               r.status,
+                "updated_at":           r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post(
+    "/channels/publish/{canonical_id}",
+    tags=["channels"],
+    summary="Publish a canonical product to all channels",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def publish_product_to_channels(
+    canonical_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Dispatch publish_new_products task for a single canonical product, or
+    call publish_product_to_channels inline and return results.
+    """
+    from sqlalchemy import select
+    from app.models.canonical_product import CanonicalProduct
+    from app.services.channel_router import publish_product_to_channels as _publish
+
+    result = await db.execute(
+        select(CanonicalProduct).where(CanonicalProduct.id == canonical_id)
+    )
+    cp = result.scalar_one_or_none()
+    if cp is None:
+        raise HTTPException(status_code=404, detail=f"CanonicalProduct {canonical_id} not found")
+
+    price = float(cp.last_price) if cp.last_price else None
+    results = await _publish(cp, price=price)
+
+    logger.info(
+        "admin.channels.publish.done",
+        canonical_product_id=str(canonical_id),
+        results=results,
+    )
+    return {
+        "canonical_product_id": str(canonical_id),
+        "results":              results,
+    }
+
+
+@router.post(
+    "/channels/sync-prices",
+    tags=["channels"],
+    summary="Trigger price sync across all channels",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def trigger_channel_price_sync() -> dict[str, Any]:
+    """Dispatch sync_prices_channels Celery task."""
+    task = celery_app.send_task("workers.tasks_channels.sync_prices_channels")
+    logger.info("admin.channels.sync_prices.dispatched", task_id=str(task.id))
+    return {"task_id": str(task.id), "status": "dispatched"}
+
+
+@router.post(
+    "/channels/sync-inventory",
+    tags=["channels"],
+    summary="Trigger inventory sync across all channels",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def trigger_channel_inventory_sync() -> dict[str, Any]:
+    """Dispatch sync_inventory_channels Celery task."""
+    task = celery_app.send_task("workers.tasks_channels.sync_inventory_channels")
+    logger.info("admin.channels.sync_inventory.dispatched", task_id=str(task.id))
+    return {"task_id": str(task.id), "status": "dispatched"}
+
+
+@router.get(
+    "/channels/orders",
+    tags=["channels"],
+    summary="List channel orders",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_channel_orders(
+    channel: str | None = Query(None, description="Filter by channel slug"),
+    status: str | None  = Query(None, description="Filter by order status"),
+    limit:  int         = Query(50, ge=1, le=200),
+    db: AsyncSession    = Depends(get_db),
+) -> dict[str, Any]:
+    """Return channel_orders with optional filters."""
+    from sqlalchemy import select
+    from app.models.sales_channel import ChannelOrder
+
+    q = select(ChannelOrder).order_by(ChannelOrder.created_at.desc()).limit(limit)
+    if channel:
+        q = q.where(ChannelOrder.channel == channel)
+    if status:
+        q = q.where(ChannelOrder.status == status)
+
+    result = await db.execute(q)
+    orders = result.scalars().all()
+    return {
+        "orders": [
+            {
+                "id":                   str(o.id),
+                "channel":              o.channel,
+                "external_order_id":    o.external_order_id,
+                "canonical_product_id": str(o.canonical_product_id) if o.canonical_product_id else None,
+                "quantity":             o.quantity,
+                "price":                str(o.price) if o.price else None,
+                "currency":             o.currency,
+                "status":               o.status,
+                "created_at":           o.created_at.isoformat() if o.created_at else None,
+            }
+            for o in orders
+        ],
+        "total": len(orders),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 

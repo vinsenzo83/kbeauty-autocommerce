@@ -846,3 +846,213 @@ tests/
   test_sprint8_pricing_service.py      – 10 tests: quote generation + Shopify apply
   test_sprint8_migrations_or_schema.py – 10 tests: ORM schema inspection
 ```
+
+---
+
+## Sprint 9: Multi-Channel Commerce Engine
+
+### Overview
+
+Sprint 9 introduces a **Multi-Channel Sales Engine** that extends the canonical product layer (Sprint 8) to support simultaneous selling across multiple platforms:
+
+| Channel | Type | Status |
+|---|---|---|
+| **Shopify** | Owned store | Active (adapter) |
+| **Shopee** | Marketplace | Stub (API wired in future sprint) |
+| **TikTok Shop** | Marketplace | Stub (API wired in future sprint) |
+
+All channels share the same `canonical_product` identity – a single product is created once and published everywhere.
+
+---
+
+### Architecture
+
+```
+Supplier Products
+      ↓
+Canonical Product  ←→  Pricing Engine
+      ↓
+  Channel Router
+  ┌────────────────────────────┐
+  │  Shopify  Shopee  TikTok  │
+  └────────────────────────────┘
+      ↓            ↓
+channel_products  channel_orders
+```
+
+#### Flow: Supplier → Pricing → Publish
+
+1. **Supplier sync** (`tasks_supplier_products`) upserts prices into `supplier_products`
+2. **Pricing engine** (`tasks_pricing`) computes `rounded_price` and writes `price_quotes`
+3. **Channel publish** (`tasks_channels.publish_new_products`) calls `channel_router.publish_product_to_channels` for each canonical product not yet listed on all channels
+4. **Price sync** (`tasks_channels.sync_prices_channels`) pushes the latest price to every channel every 6 h
+5. **Inventory sync** (`tasks_channels.sync_inventory_channels`) reads `supplier_products.stock_status` and calls `update_inventory` on each channel every 1 h
+6. **Order import** (`tasks_channels.import_channel_orders`) fetches orders from all channels every 15 min and stores them in `channel_orders`
+
+---
+
+### Database Schema (migration `0010_sales_channels.sql`)
+
+#### `sales_channels`
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `name` | VARCHAR(32) UNIQUE | slug: shopify / shopee / tiktok_shop |
+| `type` | VARCHAR(32) | owned_store \| marketplace |
+| `enabled` | BOOLEAN | soft-disable flag |
+| `created_at` / `updated_at` | TIMESTAMPTZ | |
+
+Seeded automatically: `shopify`, `shopee`, `tiktok_shop`.
+
+#### `channel_products`
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `canonical_product_id` | UUID FK | → canonical_products |
+| `channel` | VARCHAR(32) | channel slug |
+| `external_product_id` | VARCHAR(128) | platform product ID |
+| `external_variant_id` | VARCHAR(128) | platform variant/SKU ID |
+| `price` | NUMERIC(12,2) | last-synced sell price |
+| `currency` | VARCHAR(8) | default USD |
+| `status` | VARCHAR(32) | active \| inactive \| error |
+
+Constraint: `UNIQUE(channel, external_variant_id)`
+
+#### `channel_orders`
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `channel` | VARCHAR(32) | |
+| `external_order_id` | VARCHAR(128) | platform order ID |
+| `canonical_product_id` | UUID FK nullable | |
+| `quantity` | INTEGER | |
+| `price` | NUMERIC(12,2) | unit price at time of order |
+| `status` | VARCHAR(32) | pending \| processing \| completed \| cancelled |
+
+---
+
+### Channel Client Interface (`app/channels/base.py`)
+
+```python
+class ChannelClient(ABC):
+    async def create_product(canonical_product, *, price) -> dict
+    async def update_price(external_variant_id, new_price, currency) -> bool
+    async def update_inventory(external_variant_id, quantity) -> bool
+    async def fetch_orders(*, limit, status) -> list[dict]
+```
+
+All implementations gracefully degrade to **stub mode** when credentials are absent.
+
+---
+
+### Channel Router (`app/services/channel_router.py`)
+
+| Function | Description |
+|---|---|
+| `get_enabled_channels()` | Returns `['shopify', 'shopee', 'tiktok_shop']` |
+| `publish_product_to_channels(cp, *, price, clients)` | Calls `create_product` on all enabled clients |
+| `update_price_all_channels(cp, new_price, *, channel_variant_map, clients)` | Pushes new price to mapped channels |
+| `update_inventory_all_channels(cp, quantity, *, channel_variant_map, clients)` | Pushes inventory update to mapped channels |
+
+All functions accept an injectable `clients` dict for unit testing without network calls.
+
+---
+
+### Celery Beat Schedule (Sprint 9 additions)
+
+| Task | Schedule | Description |
+|---|---|---|
+| `publish_new_products` | Every 12 h | Publish unlisted canonical products |
+| `sync_prices_channels` | Every 6 h | Push pricing engine prices to channels |
+| `sync_inventory_channels` | Every 1 h | Push stock status from supplier_products |
+| `import_channel_orders` | Every 15 min | Fetch orders from all channels |
+
+---
+
+### Admin API Endpoints (Sprint 9)
+
+All endpoints require Bearer JWT.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/admin/channels` | VIEWER | List all sales channels |
+| GET | `/admin/channels/products/{canonical_id}` | VIEWER | Channel listings for a canonical product |
+| POST | `/admin/channels/publish/{canonical_id}` | OPERATOR | Publish product to all channels |
+| POST | `/admin/channels/sync-prices` | OPERATOR | Trigger price sync Celery task |
+| POST | `/admin/channels/sync-inventory` | OPERATOR | Trigger inventory sync Celery task |
+| GET | `/admin/channels/orders` | VIEWER | List channel orders (filters: channel, status) |
+
+---
+
+### Manual Task Commands
+
+```bash
+# Publish all un-listed canonical products
+celery -A app.workers.celery_app call workers.tasks_channels.publish_new_products
+
+# Sync prices to all channels
+celery -A app.workers.celery_app call workers.tasks_channels.sync_prices_channels
+
+# Sync inventory to all channels
+celery -A app.workers.celery_app call workers.tasks_channels.sync_inventory_channels
+
+# Import orders from all channels
+celery -A app.workers.celery_app call workers.tasks_channels.import_channel_orders
+```
+
+---
+
+### Backfill Procedure
+
+If `canonical_products` already exist but `channel_products` rows are missing:
+
+```bash
+# Via Admin API (per product)
+curl -X POST /admin/channels/publish/{canonical_id} \
+  -H "Authorization: Bearer <token>"
+
+# Via Celery task (all products)
+celery -A app.workers.celery_app call workers.tasks_channels.publish_new_products
+```
+
+---
+
+### Testing Commands
+
+```bash
+# Sprint 9 tests only
+pytest tests/test_sprint9_channels_router.py tests/test_sprint9_publish_worker.py \
+       tests/test_sprint9_price_sync.py tests/test_sprint9_inventory_sync.py -v
+
+# Full fast suite (229+ tests)
+make test-fast
+# OR
+pytest -q -m "not integration and not slow" --maxfail=1
+```
+
+---
+
+### New Files (Sprint 9)
+
+```
+migrations/0010_sales_channels.sql          – Idempotent DB migration
+app/models/sales_channel.py                 – ORM: SalesChannel, ChannelProduct, ChannelOrder
+app/channels/__init__.py                    – Package exports
+app/channels/base.py                        – Abstract ChannelClient interface
+app/channels/shopify.py                     – Shopify adapter (wraps ShopifyProductService)
+app/channels/shopee.py                      – Shopee stub (API placeholders)
+app/channels/tiktok_shop.py                 – TikTok Shop stub (API placeholders)
+app/services/channel_router.py              – Multi-channel routing functions
+app/workers/tasks_channels.py               – Celery tasks (publish, price, inventory, orders)
+tests/test_sprint9_channels_router.py       – 21 tests: routing logic
+tests/test_sprint9_publish_worker.py        – 13 tests: publish task + beat schedule
+tests/test_sprint9_price_sync.py            – 12 tests: price sync task
+tests/test_sprint9_inventory_sync.py        – 14 tests: inventory sync + order import
+```
+
+### Modified Files (Sprint 9)
+
+```
+app/workers/celery_app.py   – Added tasks_channels include + 4 beat schedule entries
+app/routers/admin.py        – Added 6 channel management endpoints
+```

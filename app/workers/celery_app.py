@@ -20,6 +20,7 @@ celery_app = Celery(
         "app.workers.tasks_inventory",         # Sprint 6
         "app.workers.tasks_supplier_products", # Sprint 7
         "app.workers.tasks_pricing",           # Sprint 8
+        "app.workers.tasks_channels",          # Sprint 9
     ],
 )
 
@@ -30,6 +31,10 @@ _SHOPIFY_SYNC_INTERVAL       = int(os.getenv("PRODUCT_SYNC_INTERVAL",         "1
 _INVENTORY_SYNC_INTERVAL     = int(os.getenv("INVENTORY_SYNC_INTERVAL",       "1800"))  # 30 min
 _SUPPLIER_SYNC_INTERVAL      = int(os.getenv("SUPPLIER_SYNC_INTERVAL",        "3600"))  # 60 min
 _PRICING_SYNC_INTERVAL       = int(os.getenv("PRICING_SYNC_INTERVAL",         "21600")) # 6 h
+_CHANNEL_PUBLISH_INTERVAL    = int(os.getenv("CHANNEL_PUBLISH_INTERVAL",        "43200")) # 12 h
+_CHANNEL_PRICE_INTERVAL      = int(os.getenv("CHANNEL_PRICE_INTERVAL",          "21600")) # 6 h
+_CHANNEL_INVENTORY_INTERVAL  = int(os.getenv("CHANNEL_INVENTORY_INTERVAL",      "3600"))  # 1 h
+_CHANNEL_ORDERS_INTERVAL     = int(os.getenv("CHANNEL_ORDERS_INTERVAL",         "900"))   # 15 min
 
 celery_app.conf.update(
     # Serialisation
@@ -90,6 +95,34 @@ celery_app.conf.update(
             "task":     "workers.tasks_pricing.sync_prices",
             "schedule": _PRICING_SYNC_INTERVAL,
             "options":  {"expires": _PRICING_SYNC_INTERVAL},
+        },
+
+        # Sprint 9: Multi-channel – publish new products every 12 h
+        "publish-new-products-every-12h": {
+            "task":     "workers.tasks_channels.publish_new_products",
+            "schedule": _CHANNEL_PUBLISH_INTERVAL,
+            "options":  {"expires": _CHANNEL_PUBLISH_INTERVAL},
+        },
+
+        # Sprint 9: Multi-channel – sync prices every 6 h
+        "sync-prices-channels-every-6h": {
+            "task":     "workers.tasks_channels.sync_prices_channels",
+            "schedule": _CHANNEL_PRICE_INTERVAL,
+            "options":  {"expires": _CHANNEL_PRICE_INTERVAL},
+        },
+
+        # Sprint 9: Multi-channel – sync inventory every 1 h
+        "sync-inventory-channels-every-1h": {
+            "task":     "workers.tasks_channels.sync_inventory_channels",
+            "schedule": _CHANNEL_INVENTORY_INTERVAL,
+            "options":  {"expires": _CHANNEL_INVENTORY_INTERVAL},
+        },
+
+        # Sprint 9: Multi-channel – import orders every 15 min
+        "import-channel-orders-every-15m": {
+            "task":     "workers.tasks_channels.import_channel_orders",
+            "schedule": _CHANNEL_ORDERS_INTERVAL,
+            "options":  {"expires": _CHANNEL_ORDERS_INTERVAL},
         },
     },
 )
