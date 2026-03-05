@@ -1678,3 +1678,183 @@ Navigate to: `https://dashboard.kbeautyflow.com/dashboard/publish`
 - [x] 10 mock-only tests pass — total 330 passed
 - [x] CI green
 
+
+---
+
+## Sprint 13 — Market Price Intelligence & Auto-Repricing
+
+### Goal
+Store competitor prices (manual/CSV), compute recommended sell price
+(cost + fees + margin, clamped to competitor band), apply to Shopify
+with idempotency, scheduled repricing via Celery, dashboard UI.
+
+### New files
+| File | Description |
+|------|-------------|
+| `migrations/0014_market_prices.sql` | 4 tables: market_sources, market_prices, repricing_runs, repricing_run_items |
+| `app/models/market_price.py` | SQLAlchemy ORM for all 4 tables |
+| `app/services/market_price_service.py` | upsert_market_source/price, get_market_prices, get_competitor_band, parse_market_price_csv |
+| `app/services/repricing_rules.py` | Pure pricing algorithm: base → min_margin → *.99 → competitor clamp |
+| `app/services/repricing_service.py` | preview_reprice, apply_reprice_to_shopify (dry_run + idempotency) |
+| `app/workers/tasks_repricing.py` | Celery task run_repricing + Redis lock `repricing:shopify` |
+| `dashboard/src/app/dashboard/repricing/page.tsx` | Repricing dashboard UI |
+| `tests/test_sprint13_repricing.py` | 14 mock-only tests |
+
+### Modified files
+`app/routers/admin.py` — 7 new endpoints (sprint13 tag)  
+`app/main.py` — MarketPriceBase.metadata.create_all in lifespan  
+`dashboard/src/lib/api.ts` — CompetitorBand, RepricingPreviewItem, RepricingRun types + helpers
+
+### Admin API Endpoints
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| `POST` | `/admin/market-prices` | OPERATOR | Manual competitor price entry (JSON) |
+| `POST` | `/admin/market-prices/import` | OPERATOR | CSV bulk upload |
+| `GET`  | `/admin/market-prices/{canonical_product_id}` | VIEWER | List prices + competitor band |
+| `GET`  | `/admin/repricing/preview` | VIEWER | Preview recommended vs current (no writes) |
+| `POST` | `/admin/repricing/apply` | OPERATOR | Trigger repricing run (dry_run=true/false) |
+| `GET`  | `/admin/repricing/runs` | VIEWER | List recent runs |
+| `GET`  | `/admin/repricing/runs/{run_id}` | VIEWER | Run detail + per-product items |
+
+### Copy-paste curl commands
+
+#### 1. Login and get JWT
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"changeme"}' \
+  | jq -r '.access_token')
+```
+
+#### 2. Add competitor price (manual)
+```bash
+curl -X POST http://localhost:8000/admin/market-prices \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "canonical_product_id": "<uuid>",
+    "source": "amazon",
+    "price": 29.99,
+    "currency": "USD",
+    "in_stock": true,
+    "external_url": "https://amazon.com/dp/XXXX"
+  }'
+```
+
+#### 3. CSV bulk import
+```bash
+# CSV format: canonical_sku,source,price,currency,in_stock,external_url,external_sku
+cat > /tmp/prices.csv << 'EOF'
+canonical_sku,source,price,currency,in_stock,external_url,external_sku
+SKU-001,amazon,29.99,USD,true,https://amazon.com/dp/AAA,ASIN-AAA
+SKU-002,shopee,24.50,USD,true,,
+EOF
+
+curl -X POST http://localhost:8000/admin/market-prices/import \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@/tmp/prices.csv;type=text/csv"
+```
+
+#### 4. Preview repricing (no writes)
+```bash
+curl "http://localhost:8000/admin/repricing/preview?limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq '.items[:3]'
+```
+
+#### 5. Dry-run repricing (safe simulation)
+```bash
+curl -X POST "http://localhost:8000/admin/repricing/apply?limit=20&dry_run=true" \
+  -H "Authorization: Bearer $TOKEN"
+# Returns { task_id, message, dry_run: true, note }
+```
+
+#### 6. Live repricing (⚠️ calls Shopify API)
+```bash
+curl -X POST "http://localhost:8000/admin/repricing/apply?limit=20&dry_run=false" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### 7. List runs and get detail
+```bash
+# List last 10 runs
+curl "http://localhost:8000/admin/repricing/runs?limit=10" \
+  -H "Authorization: Bearer $TOKEN"
+
+# Get run detail
+RUN_ID="<uuid-from-above>"
+curl "http://localhost:8000/admin/repricing/runs/$RUN_ID" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Pricing Algorithm
+
+```
+base_price = (supplier_cost + shipping_cost) / (1 - target_margin - fee_rate)
+base_price = max(base_price, (min_margin_abs + supplier_cost + shipping_cost) / (1 - fee_rate))
+base_rounded = floor(base_price) + 0.99          # *.99 pricing
+lower_bound = competitor_min   * 0.97
+upper_bound = competitor_median * 1.05
+recommended = clamp(base_rounded, lower_bound, upper_bound)
+```
+
+**Skip reasons:**
+- `NO_CHANGE` — recommended price within $0.01 of current Shopify price
+- `MISSING_SHOPIFY_MAPPING` — no ShopifyMapping row for product
+- `NO_IN_STOCK_SUPPLIER` — no IN_STOCK supplier product found
+
+### Environment Variables
+
+```bash
+REPRICING_ENABLED=1          # Enable automatic beat schedule (default: 0)
+REPRICING_INTERVAL=21600     # Beat interval in seconds (default: 6h = 21600)
+```
+
+**Production checklist:**
+1. Set `REPRICING_ENABLED=1` in `.env` to activate scheduled repricing
+2. Verify `SHOPIFY_API_KEY` and `SHOPIFY_ADMIN_TOKEN` are set
+3. First run with `dry_run=true`, review results
+4. Then run with `dry_run=false` for live apply
+5. Redis lock `repricing:shopify` (TTL 15 min) prevents concurrent runs
+
+### Test suite
+
+```bash
+make test-fast
+# or:
+pytest -q -m "not integration and not slow" --maxfail=1
+```
+
+### Test Coverage (Sprint 13)
+
+| Test | Description |
+|------|-------------|
+| `test_competitor_band_min_median_max` | Band math with 3 samples |
+| `test_competitor_band_even_samples` | Even sample count median |
+| `test_competitor_band_none_when_no_prices` | Returns None if no in-stock prices |
+| `test_compute_recommended_no_competitors` | Base price without competitor band |
+| `test_compute_recommended_clamped_up` | Low base → clamped to lower_bound |
+| `test_compute_recommended_clamped_down` | High base → clamped to upper_bound |
+| `test_compute_recommended_within_band` | Base inside band → no clamp |
+| `test_apply_reprice_dry_run_no_shopify_call` | DRY_RUN must not call Shopify |
+| `test_apply_reprice_skip_no_supplier` | NO_IN_STOCK_SUPPLIER skip |
+| `test_apply_reprice_skip_no_mapping` | MISSING_SHOPIFY_MAPPING skip |
+| `test_apply_reprice_idempotent_no_change` | NO_CHANGE skip (price within $0.01) |
+| `test_redis_lock_skips_concurrent_repricing` | Redis lock busy → skipped |
+| `test_parse_csv_valid` | CSV parse happy path |
+| `test_parse_csv_missing_column` | Missing required column → error |
+
+---
+
+### Definition of Done — Sprint 13 ✅
+
+- [x] `migrations/0014_market_prices.sql` — 4 idempotent tables
+- [x] ORM models: MarketSource, MarketPrice, RepricingRun, RepricingRunItem
+- [x] `market_price_service.py` — upsert, get, band computation, CSV parser
+- [x] `repricing_rules.py` — pure, tested pricing algorithm with clamp
+- [x] `repricing_service.py` — preview (no writes) + apply (dry_run + idempotent)
+- [x] `tasks_repricing.py` — Celery task + Redis lock + beat schedule via env var
+- [x] 7 admin API endpoints (VIEWER/OPERATOR roles enforced)
+- [x] Dashboard `/dashboard/repricing` page
+- [x] 14 mock-only tests — **total 344 passed**, 66 deselected, 4 warnings
+- [x] CI green ✅

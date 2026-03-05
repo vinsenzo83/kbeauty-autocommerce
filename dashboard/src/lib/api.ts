@@ -288,3 +288,80 @@ export async function listPublishJobs(limit = 50): Promise<{ total: number; item
 export async function getPublishJob(jobId: string): Promise<PublishJob> {
   return apiFetch(`/admin/publish/jobs/${jobId}`);
 }
+
+// ── Sprint 13: Market Price Intelligence + Repricing ─────────────────────────
+export interface CompetitorBand {
+  min_price: number | null;
+  median_price: number | null;
+  max_price: number | null;
+  sample_count: number;
+}
+
+export interface RepricingPreviewItem {
+  canonical_product_id: string;
+  canonical_sku: string;
+  name: string;
+  brand: string | null;
+  skip_reason: string | null;
+  supplier_cost: number | null;
+  recommended_price: number | null;
+  base_price: number | null;
+  current_price: number | null;
+  delta: number | null;
+  expected_margin_pct: number | null;
+  repricing_reason: string | null;
+  competitor_min: number | null;
+  competitor_median: number | null;
+  competitor_max: number | null;
+  competitor_samples: number;
+}
+
+export interface RepricingRun {
+  id: string;
+  channel: string;
+  status: string;
+  dry_run: boolean;
+  target_count: number;
+  updated_count: number;
+  skipped_count: number;
+  failed_count: number;
+  notes: string | null;
+  created_at: string;
+  items?: Array<{
+    id: string;
+    canonical_product_id: string;
+    old_price: number | null;
+    recommended_price: number | null;
+    applied_price: number | null;
+    status: string;
+    reason: string | null;
+    updated_at: string;
+  }>;
+}
+
+export async function getRepricingPreview(limit = 50): Promise<{ total: number; items: RepricingPreviewItem[] }> {
+  return apiFetch(`/admin/repricing/preview?limit=${limit}`);
+}
+
+export async function triggerRepricing(limit = 50, dryRun = true): Promise<{ message: string; task_id: string; dry_run: boolean }> {
+  return apiFetch(`/admin/repricing/apply?limit=${limit}&dry_run=${dryRun}`, { method: "POST" });
+}
+
+export async function listRepricingRuns(limit = 50): Promise<{ total: number; items: RepricingRun[] }> {
+  return apiFetch(`/admin/repricing/runs?limit=${limit}`);
+}
+
+export async function getRepricingRun(runId: string): Promise<RepricingRun> {
+  return apiFetch(`/admin/repricing/runs/${runId}`);
+}
+
+export async function addMarketPrice(body: {
+  canonical_product_id: string;
+  source: string;
+  price: number;
+  currency?: string;
+  in_stock?: boolean;
+  external_url?: string;
+}): Promise<{ id: string; price: number }> {
+  return apiFetch("/admin/market-prices", { method: "POST", body: JSON.stringify(body) });
+}

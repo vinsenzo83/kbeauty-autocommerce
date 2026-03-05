@@ -16,7 +16,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1401,6 +1401,284 @@ async def get_publish_job(
                 "status":               i.status,
                 "reason":               i.reason,
                 "created_at":           i.created_at.isoformat() if i.created_at else None,
+                "updated_at":           i.updated_at.isoformat() if i.updated_at else None,
+            }
+            for i in items
+        ],
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Sprint 13 – Market Price Intelligence + Auto Repricing endpoints
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ── Market Prices ─────────────────────────────────────────────────────────────
+
+@router.post(
+    "/market-prices",
+    tags=["sprint13"],
+    summary="Manually add/update a competitor price for a canonical product",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def create_market_price(
+    body: dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Body JSON:
+      canonical_product_id: str (UUID)
+      source: str  (e.g. 'competitor_manual', 'amazon')
+      price: float
+      currency: str (default 'USD')
+      in_stock: bool (default true)
+      external_url: str | null
+      external_sku: str | null
+    """
+    from app.services.market_price_service import upsert_market_price
+
+    cp_id = body.get("canonical_product_id")
+    if not cp_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="canonical_product_id is required")
+
+    mp = await upsert_market_price(
+        db,
+        canonical_product_id = cp_id,
+        source_name  = body.get("source", "competitor_manual"),
+        price        = body["price"],
+        currency     = body.get("currency", "USD"),
+        in_stock     = body.get("in_stock", True),
+        external_url = body.get("external_url"),
+        external_sku = body.get("external_sku"),
+    )
+    return {
+        "id":                   str(mp.id),
+        "canonical_product_id": str(mp.canonical_product_id),
+        "source_id":            str(mp.source_id),
+        "price":                float(mp.price),
+        "currency":             mp.currency,
+        "in_stock":             mp.in_stock,
+    }
+
+
+@router.post(
+    "/market-prices/import",
+    tags=["sprint13"],
+    summary="Bulk import competitor prices via CSV upload",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def import_market_prices_csv(
+    db: AsyncSession = Depends(get_db),
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """
+    Upload a CSV file with columns:
+        canonical_sku, source, price, currency[, in_stock, external_url, external_sku]
+
+    Returns { imported, skipped, errors }.
+    """
+    from app.services.market_price_service import parse_market_price_csv, upsert_market_price
+    from app.models.canonical_product import CanonicalProduct
+    from sqlalchemy import select
+
+    # Re-read file as bytes and decode
+    content = await file.read()
+    text    = content.decode("utf-8-sig")  # handles BOM
+
+    records, errors = parse_market_price_csv(text)
+
+    imported = 0
+    import_errors: list[str] = list(errors)
+
+    for rec in records:
+        # Resolve canonical_sku → canonical_product_id
+        cp_res = await db.execute(
+            select(CanonicalProduct).where(
+                CanonicalProduct.canonical_sku == rec["canonical_sku"]
+            )
+        )
+        cp = cp_res.scalar_one_or_none()
+        if cp is None:
+            import_errors.append(f"SKU not found: {rec['canonical_sku']}")
+            continue
+
+        try:
+            await upsert_market_price(
+                db,
+                canonical_product_id = cp.id,
+                source_name  = rec["source"],
+                price        = rec["price"],
+                currency     = rec["currency"],
+                in_stock     = rec["in_stock"],
+                external_url = rec["external_url"],
+                external_sku = rec["external_sku"],
+            )
+            imported += 1
+        except Exception as exc:  # noqa: BLE001
+            import_errors.append(f"SKU {rec['canonical_sku']}: {exc}")
+
+    return {
+        "imported": imported,
+        "skipped":  len(import_errors),
+        "errors":   import_errors[:50],
+    }
+
+
+@router.get(
+    "/market-prices/{canonical_product_id}",
+    tags=["sprint13"],
+    summary="Get all competitor prices for a canonical product",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_market_prices_for_product(
+    canonical_product_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from app.services.market_price_service import get_market_prices, get_competitor_band
+    import uuid as _uuid
+
+    cp_uuid = _uuid.UUID(canonical_product_id)
+    prices  = await get_market_prices(db, cp_uuid)
+    band    = await get_competitor_band(db, cp_uuid)
+
+    return {
+        "canonical_product_id": canonical_product_id,
+        "prices": prices,
+        "competitor_band": {
+            "min_price":    float(band.min_price)    if band else None,
+            "median_price": float(band.median_price) if band else None,
+            "max_price":    float(band.max_price)    if band else None,
+            "sample_count": band.sample_count        if band else 0,
+        },
+    }
+
+
+# ── Repricing ─────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/repricing/preview",
+    tags=["sprint13"],
+    summary="Preview repricing: recommended vs current vs competitor (no writes)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def repricing_preview(
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from app.services.repricing_service import preview_reprice
+
+    items = await preview_reprice(db, limit=limit)
+    return {"total": len(items), "items": items}
+
+
+@router.post(
+    "/repricing/apply",
+    tags=["sprint13"],
+    summary="Trigger repricing run via Celery (dry_run=true for safe simulation)",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def repricing_apply(
+    limit:   int  = Query(50, ge=1, le=200),
+    dry_run: bool = Query(True, description="Set to false for live repricing"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from app.workers.tasks_repricing import run_repricing  # noqa: PLC0415
+
+    task = run_repricing.apply_async(
+        kwargs={"limit": limit, "dry_run": dry_run},
+    )
+    return {
+        "message": "repricing job enqueued",
+        "task_id": task.id,
+        "dry_run": dry_run,
+        "limit":   limit,
+        "note":    "poll GET /admin/repricing/runs for status",
+    }
+
+
+@router.get(
+    "/repricing/runs",
+    tags=["sprint13"],
+    summary="List recent repricing runs",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_repricing_runs(
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select, desc
+    from app.models.market_price import RepricingRun
+
+    q    = select(RepricingRun).order_by(desc(RepricingRun.created_at)).limit(limit)
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "total": len(rows),
+        "items": [
+            {
+                "id":            str(r.id),
+                "channel":       r.channel,
+                "status":        r.status,
+                "dry_run":       r.dry_run,
+                "target_count":  r.target_count,
+                "updated_count": r.updated_count,
+                "skipped_count": r.skipped_count,
+                "failed_count":  r.failed_count,
+                "notes":         r.notes,
+                "created_at":    r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get(
+    "/repricing/runs/{run_id}",
+    tags=["sprint13"],
+    summary="Get repricing run detail with per-product items",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_repricing_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select
+    from app.models.market_price import RepricingRun, RepricingRunItem
+
+    run_res = await db.execute(
+        select(RepricingRun).where(RepricingRun.id == run_id)
+    )
+    run = run_res.scalar_one_or_none()
+    if run is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="repricing run not found")
+
+    items_res = await db.execute(
+        select(RepricingRunItem).where(
+            RepricingRunItem.repricing_run_id == run.id
+        )
+    )
+    items = items_res.scalars().all()
+
+    return {
+        "id":            str(run.id),
+        "channel":       run.channel,
+        "status":        run.status,
+        "dry_run":       run.dry_run,
+        "target_count":  run.target_count,
+        "updated_count": run.updated_count,
+        "skipped_count": run.skipped_count,
+        "failed_count":  run.failed_count,
+        "notes":         run.notes,
+        "created_at":    run.created_at.isoformat() if run.created_at else None,
+        "items": [
+            {
+                "id":                   str(i.id),
+                "canonical_product_id": str(i.canonical_product_id),
+                "old_price":            float(i.old_price) if i.old_price else None,
+                "recommended_price":    float(i.recommended_price) if i.recommended_price else None,
+                "applied_price":        float(i.applied_price) if i.applied_price else None,
+                "status":               i.status,
+                "reason":               i.reason,
                 "updated_at":           i.updated_at.isoformat() if i.updated_at else None,
             }
             for i in items
