@@ -137,3 +137,80 @@ async def mark_failed(session: AsyncSession, order: Order, reason: str) -> Order
     await session.flush()
     logger.warning("order.failed", order_id=str(order.id), reason=reason)
     return order
+
+
+async def mark_canceled(session: AsyncSession, order: Order, reason: str = "") -> Order:
+    """Transition order to CANCELED (MVP admin action)."""
+    order.status      = "CANCELED"
+    order.fail_reason = reason or "Admin canceled"
+    session.add(order)
+    await session.flush()
+    logger.info("order.canceled", order_id=str(order.id), reason=reason)
+    return order
+
+
+async def list_orders(
+    session: AsyncSession,
+    *,
+    status_filter: str | None     = None,
+    supplier_filter: str | None   = None,
+    country_filter: str | None    = None,
+    q: str | None                 = None,
+    margin_min: float | None      = None,
+    margin_max: float | None      = None,
+    date_from: str | None         = None,
+    date_to: str | None           = None,
+    page: int                     = 1,
+    page_size: int                = 20,
+) -> tuple[list[Order], int]:
+    """
+    Paginated order list with optional filters.
+
+    Returns (orders, total_count).
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import func, or_
+
+    query = select(Order)
+
+    if status_filter:
+        query = query.where(Order.status == status_filter)
+    if supplier_filter:
+        query = query.where(Order.supplier == supplier_filter)
+    if country_filter:
+        # Use a cast-to-text LIKE search that works on both PostgreSQL and SQLite
+        from sqlalchemy import cast, Text
+        query = query.where(
+            cast(Order.shipping_address_json, Text).ilike(f"%{country_filter}%")  # type: ignore[arg-type]
+        )
+    if q:
+        query = query.where(
+            or_(
+                Order.email.ilike(f"%{q}%"),                    # type: ignore[attr-defined]
+                Order.shopify_order_id.ilike(f"%{q}%"),         # type: ignore[attr-defined]
+                Order.supplier_order_id.ilike(f"%{q}%"),        # type: ignore[attr-defined]
+            )
+        )
+    if date_from:
+        try:
+            dt = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+            query = query.where(Order.created_at >= dt)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            dt = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc)
+            query = query.where(Order.created_at <= dt)
+        except ValueError:
+            pass
+
+    # Count
+    cnt_q  = select(func.count()).select_from(query.subquery())
+    cnt_r  = await session.execute(cnt_q)
+    total  = cnt_r.scalar_one() or 0
+
+    # Paginate
+    offset = (page - 1) * page_size
+    query  = query.order_by(Order.created_at.desc()).offset(offset).limit(page_size)  # type: ignore[attr-defined]
+    result = await session.execute(query)
+    return list(result.scalars().all()), total

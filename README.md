@@ -2,12 +2,96 @@
 
 K-Beauty 주문 자동화 백엔드 — FastAPI · PostgreSQL · Redis · Celery
 
+[![Tests](https://github.com/vinsenzo83/kbeauty-autocommerce/actions/workflows/tests.yml/badge.svg)](https://github.com/vinsenzo83/kbeauty-autocommerce/actions/workflows/tests.yml)
+
 | 스프린트 | 상태 | 내용 |
 |---|---|---|
 | Sprint 1 (v0.1.0) | ✅ 완료 | Shopify 웹훅 수신, HMAC 검증, 중복 방지, 정책 검증 |
 | Sprint 2 (v0.2.0) | ✅ 완료 | StyleKorean 공급사 주문 배치, PLACING→PLACED 상태 추가, Admin retry API |
 | Sprint 3 (v0.3.0) | ✅ 완료 | My Orders 트래킹 스크래핑, SHIPPED 상태, Celery beat 자동 폴링, Shopify fulfillment |
 | Sprint 4 (v0.4.0) | ✅ 완료 | 베스트셀러 500개 크롤링, 상품 DB 저장, Shopify 상품 동기화, 이미지 다운로드 |
+| Sprint 5 (v0.5.0) | ✅ 완료 | Admin Dashboard API (JWT 인증, KPI/Alerts/Orders/Tickets/Health) |
+
+---
+
+## CI / 테스트 정책
+
+### GitHub Actions CI
+
+모든 `push` 및 `pull_request`에서 자동으로 전체 pytest suite가 실행됩니다.
+
+```
+.github/workflows/tests.yml
+ ├─ Runner     : ubuntu-latest
+ ├─ Python     : 3.11
+ ├─ Services   : postgres:15 (port 5432) + redis:7 (port 6379)
+ ├─ Timeout    : 20분
+ ├─ DB 격리    : DATABASE_URL_TEST → 전용 CI DB (프로덕션 DB 접근 없음)
+ ├─ Command    : pytest -q --tb=short -p no:timeout
+ └─ Artifacts  : junit.xml, coverage.xml (14일 보존)
+```
+
+#### CI 환경 변수 (자동 설정)
+
+| 변수 | 값 | 설명 |
+|------|-----|------|
+| `DATABASE_URL_TEST` | `postgresql+asyncpg://kbeauty:kbeauty@localhost:5432/kbeauty_test` | CI 전용 DB — 프로덕션 절대 불접 |
+| `REDIS_URL` | `redis://localhost:6379/0` | CI Redis 서비스 |
+| `SHOPIFY_WEBHOOK_SECRET` | `test_secret` | HMAC 단위 테스트용 |
+| `STORAGE_PATH` | `./storage` | 임시 아티팩트 저장 경로 |
+| `JWT_SECRET` | `ci-test-jwt-secret` | JWT 인증 테스트용 |
+
+> **릴리즈(tag) 규칙**: CI가 green 상태일 때만 `git tag vX.Y.Z`를 생성하고 GitHub Release를 만듭니다.
+> 빨간 CI로는 릴리즈하지 않습니다.
+
+### 로컬 개발 테스트 명령어
+
+| 명령어 | 설명 |
+|---|---|
+| `make test` | 전체 suite 실행 — CI와 동일한 명령 |
+| `make test-fast` | 단위/Mock 테스트만 (`-m "not integration and not slow"`, `--maxfail=1`) — 빠른 피드백 |
+| `make test-last` | 마지막으로 실패한 테스트만 재실행 (`--lf`) |
+| `make test-cov` | 전체 suite + HTML 커버리지 리포트 (`htmlcov/`) |
+
+```bash
+# 개발 중 빠른 피드백 루프 (DB/Playwright 없이 실행 가능)
+make test-fast
+
+# 특정 테스트만
+.venv/bin/pytest tests/test_hmac.py -v
+
+# CI 전 최종 확인 (전체 suite)
+make test
+
+# 실패한 테스트만 빠르게 재실행
+make test-last
+
+# 커버리지 리포트 (htmlcov/index.html)
+make test-cov
+```
+
+### pytest 마커
+
+```python
+import pytest
+
+@pytest.mark.integration   # 라이브 Postgres / Redis 필요
+@pytest.mark.slow          # Playwright 브라우저 or 10초+ 소요
+```
+
+`tests/conftest.py`의 `pytest_collection_modifyitems`가 파일명 기반으로 자동 마킹합니다.
+수동으로 데코레이터를 붙이지 않아도 됩니다.
+
+| 테스트 파일 | 자동 마커 |
+|---|---|
+| `test_webhook_idempotency` | `integration` |
+| `test_order_state_machine` | `integration` |
+| `test_sprint2_supplier` | `integration`, `slow` |
+| `test_sprint3_tracking` | `integration`, `slow` |
+| `test_sprint4_products` | `slow` |
+
+`integration` / `slow` 마커가 붙은 테스트는 `make test-fast`에서 자동으로 제외됩니다.
+CI(`make test`)에서는 모든 마커의 테스트가 실행됩니다.
 
 ---
 

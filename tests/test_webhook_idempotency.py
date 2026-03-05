@@ -65,7 +65,7 @@ async def setup_db() -> AsyncGenerator[None, None]:
 
 @pytest_asyncio.fixture
 async def client() -> AsyncGenerator[AsyncClient, None]:
-    app = create_app()
+    app = create_app(use_lifespan=False)
 
     # Override DB dependency
     from app.db.session import get_db

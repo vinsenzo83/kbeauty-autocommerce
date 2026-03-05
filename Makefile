@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint fmt build
+.PHONY: up down logs test test-fast test-last test-cov lint fmt build help
 
 COMPOSE  = docker compose -f infra/docker-compose.yml
 APP_NAME = kbeauty-autocommerce
@@ -41,13 +41,27 @@ restart:
 ps:
 	$(COMPOSE) ps
 
-# ── Tests (run locally, not inside Docker) ───────────────────────────────────
+# ── Tests ─────────────────────────────────────────────────────────────────────
 
+## Full test suite — mirrors what GitHub Actions CI runs.
 test:
-	$(PYTEST) -v --tb=short
+	$(PYTEST) -q --tb=short -p no:timeout
 
+## Fast / unit-only pass: skip integration (DB/Redis) and slow (Playwright) tests.
+## Fails immediately on the first failure (--maxfail=1).
+## Ideal for rapid feedback during development.
+test-fast:
+	$(PYTEST) -q --tb=short --maxfail=1 -p no:timeout \
+		-m "not integration and not slow"
+
+## Re-run only the tests that failed in the last pytest run.
+test-last:
+	$(PYTEST) -q --tb=short -p no:timeout --lf
+
+## Full suite with coverage report.
 test-cov:
-	$(PYTEST) -v --tb=short --cov=app --cov-report=term-missing
+	$(PYTEST) -q --tb=short -p no:timeout \
+		--cov=app --cov-report=term-missing --cov-report=html:htmlcov
 
 # ── Code quality ─────────────────────────────────────────────────────────────
 
@@ -66,16 +80,25 @@ migrate:
 
 help:
 	@echo ""
-	@echo "  make up          – Start all services via Docker Compose"
-	@echo "  make up-local    – Start services locally (no Docker)"
-	@echo "  make down        – Stop and remove containers + volumes"
-	@echo "  make logs        – Tail all service logs"
-	@echo "  make build       – Rebuild Docker images"
-	@echo "  make restart     – Restart api + worker"
-	@echo "  make ps          – Show running containers"
-	@echo "  make test        – Run pytest via .venv"
-	@echo "  make test-cov    – Run pytest with coverage"
-	@echo "  make lint        – Lint with ruff"
-	@echo "  make fmt         – Format with ruff"
-	@echo "  make migrate     – Run alembic migrations inside api container"
+	@echo "  ── Infrastructure ──────────────────────────────────────────────"
+	@echo "  make up           – Start all services via Docker Compose"
+	@echo "  make up-local     – Start services locally (no Docker)"
+	@echo "  make down         – Stop and remove containers + volumes"
+	@echo "  make logs         – Tail all service logs"
+	@echo "  make build        – Rebuild Docker images"
+	@echo "  make restart      – Restart api + worker"
+	@echo "  make ps           – Show running containers"
+	@echo ""
+	@echo "  ── Tests ───────────────────────────────────────────────────────"
+	@echo "  make test         – Full pytest suite (mirrors CI)"
+	@echo "  make test-fast    – Unit/mock-only; skip integration & slow tests"
+	@echo "  make test-last    – Re-run last failed tests"
+	@echo "  make test-cov     – Full suite + HTML coverage report"
+	@echo ""
+	@echo "  ── Code quality ────────────────────────────────────────────────"
+	@echo "  make lint         – Lint with ruff"
+	@echo "  make fmt          – Format with ruff"
+	@echo ""
+	@echo "  ── DB ──────────────────────────────────────────────────────────"
+	@echo "  make migrate      – Run alembic migrations inside api container"
 	@echo ""
