@@ -1,0 +1,73 @@
+# =============================================================================
+# infra/Dockerfile.dashboard
+# Next.js Admin Dashboard – Production Multi-Stage Build
+# =============================================================================
+#
+# Stage 1 (deps)    – Install production Node.js dependencies
+# Stage 2 (builder) – Build the Next.js application
+# Stage 3 (runner)  – Minimal runtime image
+#
+# Result: slim image (~180 MB) with no dev dependencies.
+# =============================================================================
+
+# ── Stage 1: Install dependencies ─────────────────────────────────────────────
+FROM node:20-alpine AS deps
+
+WORKDIR /app
+
+# Install libc compatibility (required by some native Node modules)
+RUN apk add --no-cache libc6-compat
+
+# Copy package manifests only (cache-friendly layer)
+COPY dashboard/package.json dashboard/package-lock.json* ./
+
+RUN npm ci --omit=dev
+
+
+# ── Stage 2: Build ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy installed deps from stage 1
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy full dashboard source
+COPY dashboard/ .
+
+# Disable Next.js telemetry in CI/CD
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Build for production (output: standalone)
+RUN npm run build
+
+
+# ── Stage 3: Runtime ──────────────────────────────────────────────────────────
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3001
+
+# Create non-root user
+RUN addgroup --system --gid 1001 nodejs \
+ && adduser  --system --uid 1001 nextjs
+
+# Copy only what Next.js needs to run
+COPY --from=builder /app/public        ./public
+COPY --from=builder /app/.next/static  ./.next/static
+
+# standalone output contains server.js + minimal node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+
+USER nextjs
+
+EXPOSE 3001
+
+# Health probe for Docker (also used by docker-compose healthcheck)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget -qO- http://localhost:3001 || exit 1
+
+CMD ["node", "server.js"]

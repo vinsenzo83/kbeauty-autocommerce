@@ -1056,3 +1056,317 @@ tests/test_sprint9_inventory_sync.py        – 14 tests: inventory sync + order
 app/workers/celery_app.py   – Added tasks_channels include + 4 beat schedule entries
 app/routers/admin.py        – Added 6 channel management endpoints
 ```
+
+---
+
+## Production Deployment Guide
+
+### Server Specifications
+
+| Item | Value |
+|---|---|
+| OS | Ubuntu 24 LTS |
+| Public IP | 172.86.127.238 |
+| Deploy user | `deploy` |
+| Stack | Docker Compose + Nginx |
+| External ports | 80 (HTTP), 443 (HTTPS only) |
+| Internal ports | 8000 (API), 3001 (Dashboard) – localhost only |
+
+---
+
+### Security Architecture
+
+```
+Internet
+   │
+   ▼  ports 80/443 only
+┌─────────────────────────────────┐
+│  Nginx (reverse proxy)          │
+│  /          → :3001 dashboard   │
+│  /admin/    → :8000 FastAPI     │
+│  /api/      → :8000 FastAPI     │
+│  /health    → :8000 FastAPI     │
+└──────────┬──────────────────────┘
+           │ 127.0.0.1 only
+  ┌────────┴────────────────────┐
+  │  Docker Internal Network    │
+  │  (kbeauty_internal bridge)  │
+  │                             │
+  │  :8000 API (FastAPI)        │
+  │  :3001 Dashboard (Next.js)  │
+  │  :5432 PostgreSQL ← HIDDEN  │
+  │  :6379 Redis      ← HIDDEN  │
+  └─────────────────────────────┘
+```
+
+- PostgreSQL and Redis are **never exposed** to the host or internet
+- API and Dashboard are bound to `127.0.0.1` (localhost only)
+- Only Nginx receives external traffic on ports 80/443
+- All containers use `restart: always` for auto-recovery
+
+---
+
+### Quick Start (Fresh VPS)
+
+```bash
+# 1. SSH into server as root
+ssh root@172.86.127.238
+
+# 2. Create deploy user
+adduser deploy
+usermod -aG sudo deploy
+
+# 3. Clone and run deployment script
+git clone https://github.com/vinsenzo83/kbeauty-autocommerce.git /opt/apps/kbeauty-autocommerce
+cd /opt/apps/kbeauty-autocommerce
+
+# 4. Edit environment variables (REQUIRED before first start)
+cp .env.production .env
+nano .env   # Fill in all ← REQUIRED values
+
+# 5. Deploy
+sudo bash infra/scripts/deploy.sh
+```
+
+---
+
+### Step-by-Step Deployment Commands
+
+#### Step 1 – Server preparation
+```bash
+# Run as root
+apt update && apt upgrade -y
+apt install -y git nginx ufw ca-certificates curl make
+
+# Install Docker
+curl -fsSL https://get.docker.com | sh
+systemctl enable --now docker
+apt install -y docker-compose-plugin
+
+# Firewall
+ufw allow OpenSSH
+ufw allow 80
+ufw allow 443
+ufw --force enable
+```
+
+#### Step 2 – App directory
+```bash
+mkdir -p /opt/apps
+chown -R deploy:deploy /opt/apps
+usermod -aG docker deploy
+```
+
+#### Step 3 – Clone repository
+```bash
+cd /opt/apps
+git clone https://github.com/vinsenzo83/kbeauty-autocommerce.git
+cd kbeauty-autocommerce
+git checkout main
+```
+
+#### Step 4 – Environment setup
+```bash
+cp .env.production .env
+chmod 600 .env
+nano .env   # Fill in POSTGRES_PASSWORD, JWT_SECRET, SHOPIFY_*, ADMIN_* etc.
+```
+
+Key variables to set:
+```env
+POSTGRES_PASSWORD=<strong-random-32-char>
+JWT_SECRET=<strong-random-64-char>
+ADMIN_EMAIL=admin@yourdomain.com
+ADMIN_PASSWORD=<strong-password>
+SHOPIFY_WEBHOOK_SECRET=<from-shopify-partner-dashboard>
+SHOPIFY_API_KEY=<shopify-private-app-key>
+SHOPIFY_API_SECRET=<shopify-private-app-secret>
+SHOPIFY_ACCESS_TOKEN=<shopify-access-token>
+SHOPIFY_STORE_DOMAIN=your-store.myshopify.com
+STYLEKOREAN_EMAIL=<your-account>
+STYLEKOREAN_PASSWORD=<your-password>
+```
+
+#### Step 5 – Start application stack
+```bash
+# Option A: Using Makefile (recommended)
+make prod-up
+
+# Option B: Direct Docker Compose
+docker compose -f infra/docker-compose.prod.yml --env-file .env up -d --build
+```
+
+#### Step 6 – Run database migrations
+```bash
+# Option A: Using Makefile
+make prod-migrate
+
+# Option B: Direct
+docker compose -f infra/docker-compose.prod.yml --env-file .env run --rm migrate
+```
+
+#### Step 7 – Health verification
+```bash
+# API health
+curl http://127.0.0.1:8000/health
+
+# Dashboard
+curl http://127.0.0.1:3001
+
+# Celery worker
+docker exec kbeauty-worker celery -A app.workers.celery_app:celery_app inspect ping
+
+# Full health check script
+make prod-health
+```
+
+#### Step 8 – Nginx reverse proxy
+```bash
+# Copy config
+sudo cp infra/nginx/kbeauty.conf /etc/nginx/sites-available/kbeauty
+sudo ln -sf /etc/nginx/sites-available/kbeauty /etc/nginx/sites-enabled/kbeauty
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# Test and reload
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+---
+
+### Expected Docker Containers
+
+```
+CONTAINER NAME        IMAGE                    STATUS       PORTS
+kbeauty-postgres      postgres:16-alpine       healthy      (internal only)
+kbeauty-redis         redis:7-alpine           healthy      (internal only)
+kbeauty-api           kbeauty-api:latest       healthy      127.0.0.1:8000→8000
+kbeauty-worker        kbeauty-api:latest       running      (no port)
+kbeauty-beat          kbeauty-api:latest       running      (no port)
+kbeauty-dashboard     kbeauty-dashboard:latest healthy      127.0.0.1:3001→3001
+```
+
+---
+
+### Database Backup & Restore
+
+```bash
+# Manual backup
+make prod-backup
+# OR
+docker exec -t kbeauty-postgres pg_dump -U kbeauty kbeauty \
+  | gzip > /opt/apps/backups/kbeauty_db_$(date +%Y%m%d_%H%M%S).sql.gz
+
+# Restore
+gunzip -c /opt/apps/backups/kbeauty_db_YYYYMMDD_HHMMSS.sql.gz \
+  | docker exec -i kbeauty-postgres psql -U kbeauty -d kbeauty
+
+# Automated daily backup (add to crontab)
+crontab -e
+# Add: 0 2 * * * /opt/apps/kbeauty-autocommerce/infra/scripts/backup.sh >> /var/log/kbeauty-backup.log 2>&1
+```
+
+---
+
+### SSL Certificate (HTTPS)
+
+```bash
+# Install certbot
+sudo apt install -y certbot python3-certbot-nginx
+
+# Obtain certificate
+sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com
+
+# Auto-renewal is configured automatically by certbot
+# Test renewal:
+sudo certbot renew --dry-run
+```
+
+After certbot, edit `/etc/nginx/sites-available/kbeauty`:
+- Uncomment the `HTTP → HTTPS redirect` block  
+- Uncomment the `HTTPS server` block  
+- Comment out the HTTP catch-all block
+
+---
+
+### Logging
+
+```bash
+# All containers
+make prod-logs
+
+# Individual containers
+docker logs -f kbeauty-api
+docker logs -f kbeauty-worker
+docker logs -f kbeauty-beat
+docker logs -f kbeauty-dashboard
+docker logs -f kbeauty-postgres
+
+# Nginx logs
+sudo tail -f /var/log/nginx/kbeauty_access.log
+sudo tail -f /var/log/nginx/kbeauty_error.log
+```
+
+---
+
+### Zero-Downtime Updates
+
+```bash
+# Pull latest code and redeploy (preserves DB data)
+make prod-update
+
+# Manual equivalent
+cd /opt/apps/kbeauty-autocommerce
+git pull --rebase origin main
+make prod-build
+make prod-migrate
+docker compose -f infra/docker-compose.prod.yml up -d --no-deps api worker beat dashboard
+make prod-health
+```
+
+---
+
+### Troubleshooting
+
+| Symptom | Command | Solution |
+|---|---|---|
+| API not responding | `docker logs kbeauty-api` | Check DB connectivity, `.env` vars |
+| Celery not running | `docker logs kbeauty-worker` | Check Redis URL, worker concurrency |
+| Dashboard blank | `docker logs kbeauty-dashboard` | Check Next.js build, `NEXT_PUBLIC_API_URL` |
+| Nginx 502 | `nginx -t && systemctl status nginx` | Confirm API/Dashboard are running |
+| DB connection error | `docker exec kbeauty-postgres pg_isready -U kbeauty` | Check `POSTGRES_PASSWORD` |
+| Migration failed | `docker logs kbeauty-migrate` | Check SQL syntax, DB connectivity |
+| Port not accessible | `ufw status` | Allow port 80/443 in UFW |
+
+```bash
+# Check all containers status
+make prod-ps
+
+# Run full health check
+make prod-health
+
+# Check specific container
+docker inspect kbeauty-api | grep -A5 '"Health"'
+
+# Enter running container for debugging
+docker exec -it kbeauty-api bash
+
+# Check Celery task queue
+docker exec kbeauty-worker \
+  celery -A app.workers.celery_app:celery_app inspect active
+```
+
+---
+
+### New Files Added for Production (Sprint 9+)
+
+```
+infra/docker-compose.prod.yml   – Production Docker Compose (security hardened)
+infra/Dockerfile.dashboard      – Multi-stage Next.js production build
+infra/migrate.py                – SQL migration runner (used by migrate service)
+infra/nginx/kbeauty.conf        – Nginx reverse proxy configuration
+infra/scripts/deploy.sh         – Full automated deployment script
+infra/scripts/backup.sh         – Database backup + rotation script
+infra/scripts/healthcheck.sh    – Service health verification script
+.env.production                 – Production .env template (safe to commit)
+```

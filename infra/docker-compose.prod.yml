@@ -1,0 +1,274 @@
+# =============================================================================
+# docker-compose.prod.yml
+# KBeauty AutoCommerce – Production Stack
+# =============================================================================
+#
+# Usage:
+#   docker compose -f infra/docker-compose.prod.yml --env-file .env up -d
+#
+# Security rules enforced here:
+#   - PostgreSQL port 5432  → INTERNAL ONLY (no host binding)
+#   - Redis port 6379       → INTERNAL ONLY (no host binding)
+#   - API port 8000         → 127.0.0.1 only  (Nginx proxies externally)
+#   - Dashboard port 3001   → 127.0.0.1 only  (Nginx proxies externally)
+#   - Only Nginx exposes 80/443 to the world
+#   - All services: restart: always  (auto-restart on reboot/crash)
+# =============================================================================
+
+version: "3.9"
+
+# ── Shared network (internal, never exposed) ──────────────────────────────────
+networks:
+  kbeauty_internal:
+    driver: bridge
+    internal: false   # allows outbound internet (for Shopify/supplier API calls)
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────────
+  # NOT exposed to host network. Only reachable by containers in kbeauty_internal.
+  postgres:
+    image: postgres:16-alpine
+    container_name: kbeauty-postgres
+    restart: always
+    networks:
+      - kbeauty_internal
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-kbeauty}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB:       ${POSTGRES_DB:-kbeauty}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # ⚠️  NO ports: section — PostgreSQL is NEVER accessible from outside Docker
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kbeauty} -d ${POSTGRES_DB:-kbeauty}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── Redis ──────────────────────────────────────────────────────────────────────
+  # NOT exposed to host network.
+  redis:
+    image: redis:7-alpine
+    container_name: kbeauty-redis
+    restart: always
+    networks:
+      - kbeauty_internal
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    volumes:
+      - redis_data:/data
+    # ⚠️  NO ports: section — Redis is NEVER accessible from outside Docker
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── Database Migration Runner (one-shot) ──────────────────────────────────────
+  # Runs all SQL migrations in order then exits (exit 0).
+  # docker compose run --rm migrate
+  migrate:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    container_name: kbeauty-migrate
+    restart: "no"
+    networks:
+      - kbeauty_internal
+    env_file: ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST:    redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python", "infra/migrate.py"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  # ── FastAPI Application ───────────────────────────────────────────────────────
+  # Bound to 127.0.0.1:8000 — only Nginx can reach it from the host.
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    image: kbeauty-api:latest
+    container_name: kbeauty-api
+    restart: always
+    networks:
+      - kbeauty_internal
+    env_file: ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST:    redis
+      APP_ENV:       production
+    ports:
+      - "127.0.0.1:8000:8000"      # ← localhost only; Nginx proxies
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--workers", "2",
+        "--log-level", "info",
+        "--access-log",
+        "--proxy-headers",
+        "--forwarded-allow-ips", "*",
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  # ── Celery Worker ─────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    image: kbeauty-api:latest
+    container_name: kbeauty-worker
+    restart: always
+    networks:
+      - kbeauty_internal
+    env_file: ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST:    redis
+      APP_ENV:       production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command:
+      [
+        "celery",
+        "-A", "app.workers.celery_app:celery_app",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=4",
+        "-Q", "celery",
+        "--max-tasks-per-child=1000",
+        "--without-gossip",
+        "--without-mingle",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A app.workers.celery_app:celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 || exit 1",
+        ]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  # ── Celery Beat Scheduler ─────────────────────────────────────────────────────
+  beat:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    image: kbeauty-api:latest
+    container_name: kbeauty-beat
+    restart: always
+    networks:
+      - kbeauty_internal
+    env_file: ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST:    redis
+      APP_ENV:       production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command:
+      [
+        "celery",
+        "-A", "app.workers.celery_app:celery_app",
+        "beat",
+        "--loglevel=info",
+        "--scheduler", "celery.beat:PersistentScheduler",
+      ]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── Next.js Admin Dashboard ───────────────────────────────────────────────────
+  # Bound to 127.0.0.1:3001 — only Nginx can reach it from the host.
+  dashboard:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.dashboard
+    image: kbeauty-dashboard:latest
+    container_name: kbeauty-dashboard
+    restart: always
+    networks:
+      - kbeauty_internal
+    environment:
+      NODE_ENV:              production
+      NEXT_PUBLIC_API_URL:   http://127.0.0.1:8000
+      PORT:                  3001
+    ports:
+      - "127.0.0.1:3001:3001"      # ← localhost only; Nginx proxies
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3001 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
