@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     def CELERY_RESULT_BACKEND(self) -> str:  # noqa: N802
         return self.REDIS_URL
 
+    # ── Webhook Security (Sprint 11) ─────────────────────────────────────────
+    # Set WEBHOOK_VERIFY=1 in production to enforce HMAC signature checks.
+    # In dev/test mode (WEBHOOK_VERIFY=0) all signatures are skipped so that
+    # mock payloads and fixtures can be posted without signing.
+    WEBHOOK_VERIFY: bool = False
+
     # ── Shopify ───────────────────────────────────────────────────────────────
     SHOPIFY_WEBHOOK_SECRET: str = "test-secret"
     SHOPIFY_API_KEY: Optional[str] = None

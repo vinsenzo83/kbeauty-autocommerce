@@ -1370,3 +1370,154 @@ infra/scripts/backup.sh         – Database backup + rotation script
 infra/scripts/healthcheck.sh    – Service health verification script
 .env.production                 – Production .env template (safe to commit)
 ```
+
+---
+
+## Sprint 11: Webhook Security — Shopify HMAC Verification
+
+### Overview
+
+Sprint 11 adds **production-grade webhook signature verification** for all
+incoming Shopify webhook requests.  Shopee and TikTok endpoints are intentionally
+left without signature enforcement for now (their signing schemes differ and will
+be added in a future sprint).
+
+---
+
+### How Shopify HMAC Verification Works
+
+Shopify signs every webhook with an HMAC-SHA256 digest of the raw request body,
+encoded as Base64, and sends it in the `X-Shopify-Hmac-Sha256` HTTP header.
+
+```
+expected = base64( hmac_sha256( SHOPIFY_WEBHOOK_SECRET, raw_body ) )
+safe_compare( expected, request.headers["X-Shopify-Hmac-Sha256"] )
+```
+
+The comparison uses `hmac.compare_digest()` to prevent **timing-oracle attacks**.
+
+---
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEBHOOK_VERIFY` | `0` | `0` = dev/test (skip all checks) · `1` = production (enforce HMAC) |
+| `SHOPIFY_WEBHOOK_SECRET` | `test-secret` | Shared secret from Shopify Partner Dashboard |
+
+> **Never** set `WEBHOOK_VERIFY=0` in production.
+
+---
+
+### Dev vs Production Mode
+
+#### Development / Test (default)
+
+```dotenv
+WEBHOOK_VERIFY=0
+SHOPIFY_WEBHOOK_SECRET=test-secret
+```
+
+All webhooks are accepted without signature checking.  
+Mock fixtures and `scripts/mock_webhooks.sh` work out-of-the-box.
+
+#### Production
+
+```dotenv
+WEBHOOK_VERIFY=1
+SHOPIFY_WEBHOOK_SECRET=<your-real-shopify-webhook-secret>
+```
+
+Every `POST /webhook/shopify` request is verified.  
+A failed or missing signature returns **HTTP 401** with:
+
+```json
+{
+  "status": "unauthorized",
+  "reason": "SHOPIFY_WEBHOOK_SIGNATURE_INVALID",
+  "detail": "Invalid X-Shopify-Hmac-Sha256 signature"
+}
+```
+
+---
+
+### Enabling Verification on the VPS
+
+```bash
+ssh root@172.86.127.238
+cd /opt/apps/kbeauty-autocommerce
+
+# 1. Set production secret from Shopify Partner Dashboard
+#    Settings → Notifications → Webhooks → Signing secret
+sed -i 's/^SHOPIFY_WEBHOOK_SECRET=.*/SHOPIFY_WEBHOOK_SECRET=<your-real-secret>/' .env
+sed -i 's/^WEBHOOK_VERIFY=.*/WEBHOOK_VERIFY=1/'                                  .env
+
+# 2. Restart API to pick up new env vars
+docker compose -f infra/docker-compose.prod.yml --env-file .env \
+  up -d --no-deps --force-recreate api
+
+# 3. Verify — valid HMAC should return 200, invalid should return 401
+SECRET="<your-real-secret>"
+BODY='{"id":1,"test":true}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -binary | base64)
+
+curl -s -X POST http://172.86.127.238/webhook/shopify \
+  -H "Content-Type: application/json" \
+  -H "X-Shopify-Topic: orders/create" \
+  -H "X-Shopify-Hmac-Sha256: $SIG" \
+  -d "$BODY" | python3 -m json.tool
+
+# Tampered signature → must return 401
+curl -s -o /dev/null -w "%{http_code}" \
+  -X POST http://172.86.127.238/webhook/shopify \
+  -H "Content-Type: application/json" \
+  -H "X-Shopify-Hmac-Sha256: invalidsignature==" \
+  -d "$BODY"
+# Expected output: 401
+```
+
+---
+
+### New Files (Sprint 11)
+
+```
+app/webhooks/verify.py                  – verify_shopify_webhook() pure function
+tests/test_sprint11_webhook_verify.py   – 13 tests (unit + integration)
+```
+
+### Modified Files (Sprint 11)
+
+```
+app/config.py           – Added WEBHOOK_VERIFY (bool, default False)
+app/webhooks/ingress.py – Integrated signature gate; Settings injected via DI
+```
+
+### Test Coverage (Sprint 11)
+
+| Test | Description |
+|---|---|
+| `test_verify_shopify_valid_signature` | Correct HMAC → True |
+| `test_verify_shopify_wrong_secret` | Wrong secret → False |
+| `test_verify_shopify_tampered_body` | Modified body → False |
+| `test_verify_shopify_empty_header` | Empty header → False |
+| `test_verify_shopify_none_inputs` | None/empty values → False |
+| `test_ingress_valid_sig_verify_on` | Valid sig + `WEBHOOK_VERIFY=1` → 200 ok |
+| `test_ingress_invalid_sig_verify_on` | Invalid sig + `WEBHOOK_VERIFY=1` → 401 |
+| `test_ingress_missing_header_verify_on` | Missing header + `WEBHOOK_VERIFY=1` → 401 |
+| `test_ingress_verify_disabled` | Bad sig + `WEBHOOK_VERIFY=0` → 200 ok |
+| `test_ingress_reason_in_401_body` | 401 body contains `SHOPIFY_WEBHOOK_SIGNATURE_INVALID` |
+| `test_ingress_shopee_no_verify` | Shopee bypasses Shopify HMAC check |
+| `test_ingress_tiktok_no_verify` | TikTok bypasses Shopify HMAC check |
+| `test_existing_sprint10_tests_unaffected` | Sprint 10 flow still works (regression) |
+
+---
+
+### Definition of Done — Sprint 11 ✅
+
+- [x] `POST /webhook/shopify` with invalid signature returns **HTTP 401**
+- [x] `POST /webhook/shopify` with valid signature returns **200 ok**
+- [x] Verification disabled by default (`WEBHOOK_VERIFY=0`) — no breaking change
+- [x] Shopee / TikTok endpoints unaffected
+- [x] All 320 tests pass — CI green
+- [x] README updated
+
