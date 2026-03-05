@@ -69,7 +69,7 @@ services:
       - kbeauty_internal
     command: >
       redis-server
-      --requirepass ${REDIS_PASSWORD:-}
+      --requirepass ${REDIS_PASSWORD:-kbeautyredis2024}
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       --save 900 1
