@@ -1796,3 +1796,171 @@ async def trigger_fulfillment(
         "dry_run":          dry_run,
         "note":             "poll GET /admin/supplier-orders?status=placed for result",
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Sprint 15 – AI Product Discovery Admin API
+# ═════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/discovery/trends",
+    tags=["sprint15"],
+    summary="List recent trend signals (TikTok / Amazon)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_discovery_trends(
+    source: str | None = Query(None, description="Filter by source: tiktok | amazon_bestsellers"),
+    limit:  int        = Query(50, ge=1, le=200),
+    db: AsyncSession   = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select, desc
+    from app.models.trend_product import TrendProduct
+
+    q = select(TrendProduct).order_by(desc(TrendProduct.trend_score)).limit(limit)
+    if source:
+        q = q.where(TrendProduct.source == source)
+
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "total": len(rows),
+        "items": [
+            {
+                "id":          str(r.id),
+                "source":      r.source,
+                "external_id": r.external_id,
+                "name":        r.name,
+                "brand":       r.brand,
+                "category":    r.category,
+                "trend_score": float(r.trend_score),
+                "collected_at":r.collected_at.isoformat() if r.collected_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get(
+    "/discovery/candidates",
+    tags=["sprint15"],
+    summary="List top product candidates from the discovery pipeline",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_discovery_candidates(
+    status: str | None = Query(None, description="Filter by status: candidate | published | rejected"),
+    limit:  int        = Query(50, ge=1, le=200),
+    db: AsyncSession   = Depends(get_db),
+) -> dict[str, Any]:
+    from app.services.discovery_service import get_top_candidates
+    from app.models.product_candidate import CandidateStatus
+
+    _status = status or CandidateStatus.CANDIDATE
+    items = await get_top_candidates(db, limit=limit, status=_status)
+    return {"total": len(items), "items": items}
+
+
+@router.post(
+    "/discovery/run",
+    tags=["sprint15"],
+    summary="Trigger AI product discovery pipeline (dry_run=true is safe)",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def run_discovery(
+    dry_run: bool      = Query(True,  description="Dry run – collect & score only, no DB writes"),
+    top_n:   int       = Query(50,    ge=1, le=200, description="Max candidates to keep"),
+    async_:  bool      = Query(False, alias="async", description="Run via Celery (background)"),
+    db: AsyncSession   = Depends(get_db),
+) -> dict[str, Any]:
+    if async_:
+        from app.workers.tasks_discovery import run_discovery_pipeline
+        task = run_discovery_pipeline.apply_async(
+            kwargs={"dry_run": dry_run, "top_n": top_n}
+        )
+        return {
+            "message":  "discovery pipeline enqueued",
+            "task_id":  task.id,
+            "dry_run":  dry_run,
+            "top_n":    top_n,
+        }
+
+    # Synchronous (in-process) run – good for interactive API exploration
+    from app.services.discovery_service import run_product_discovery
+    result = await run_product_discovery(db, dry_run=dry_run, top_n=top_n)
+    if not dry_run:
+        await db.commit()
+    return {
+        "status":              "ok",
+        "dry_run":             dry_run,
+        "signals_collected":   result.signals_collected,
+        "signals_matched":     result.signals_matched,
+        "candidates_created":  result.candidates_created,
+        "candidates_updated":  result.candidates_updated,
+        "candidates_rejected": result.candidates_rejected,
+        "top_count":           len(result.top_candidates),
+        "top_candidates":      result.top_candidates[:10],  # First 10 in response
+        "errors":              result.errors,
+    }
+
+
+@router.post(
+    "/discovery/publish/{candidate_id}",
+    tags=["sprint15"],
+    summary="Publish a specific discovery candidate to Shopify",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def publish_discovery_candidate(
+    candidate_id: str,
+    dry_run: bool     = Query(True, description="Dry run – don't call Shopify"),
+    db: AsyncSession  = Depends(get_db),
+) -> dict[str, Any]:
+    from fastapi import HTTPException
+    from sqlalchemy import select
+    from app.models.product_candidate import ProductCandidate, CandidateStatus
+    from app.models.canonical_product import CanonicalProduct
+
+    # Fetch candidate
+    candidate_row = (await db.execute(
+        select(ProductCandidate).where(ProductCandidate.id == candidate_id).limit(1)
+    )).scalar_one_or_none()
+    if candidate_row is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    if candidate_row.status != CandidateStatus.CANDIDATE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"candidate already in status={candidate_row.status!r}",
+        )
+
+    # Verify canonical product exists
+    cp = (await db.execute(
+        select(CanonicalProduct).where(
+            CanonicalProduct.id == candidate_row.canonical_product_id
+        ).limit(1)
+    )).scalar_one_or_none()
+    if cp is None:
+        raise HTTPException(status_code=404, detail="canonical product not found")
+
+    # Trigger publish via publish_service (limit=1, this specific product)
+    from app.services.publish_service import publish_top_products_to_shopify
+    result = await publish_top_products_to_shopify(
+        session=db,
+        limit=1,
+        dry_run=dry_run,
+    )
+
+    # Update candidate status
+    if not dry_run:
+        candidate_row.status = CandidateStatus.PUBLISHED  # type: ignore[assignment]
+        candidate_row.notes  = f"published via admin API job_id={result.job_id}"  # type: ignore[assignment]
+        db.add(candidate_row)
+        await db.commit()
+
+    return {
+        "candidate_id":        candidate_id,
+        "canonical_product_id":str(candidate_row.canonical_product_id),
+        "canonical_sku":       cp.canonical_sku,
+        "name":                cp.name,
+        "dry_run":             dry_run,
+        "publish_job_id":      result.job_id,
+        "publish_status":      result.status,
+        "published_count":     result.published_count,
+        "candidate_status":    candidate_row.status if not dry_run else "candidate",
+    }

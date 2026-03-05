@@ -478,3 +478,112 @@ async def publish_top_products_to_shopify(
         notes           = job.notes or "",
         items           = item_summaries,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 15 – AI Discovery integration: get_top_candidates
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_top_candidates(
+    session: AsyncSession,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """
+    Return the top-scored product candidates from the Sprint 15 AI discovery
+    pipeline, incorporating both discovery scores and Shopify publish readiness.
+
+    Combines:
+    1. ProductCandidate rows (status='candidate') sorted by final_score DESC
+    2. CanonicalProduct metadata (name, brand, last_price, supplier availability)
+    3. ShopifyMapping presence (already_published flag)
+
+    Parameters
+    ----------
+    session : Async SQLAlchemy session
+    limit   : Maximum candidates to return (default 50)
+
+    Returns
+    -------
+    List of dicts with combined candidate + product + publish info.
+    """
+    # Import here to avoid circular imports at module load time
+    from app.models.product_candidate import ProductCandidate, CandidateStatus
+    from app.models.shopify_mapping import ShopifyMapping
+    from sqlalchemy import desc
+
+    # Fetch top candidates from discovery pipeline
+    rows = (await session.execute(
+        select(ProductCandidate)
+        .where(ProductCandidate.status == CandidateStatus.CANDIDATE)
+        .order_by(desc(ProductCandidate.final_score))
+        .limit(limit)
+    )).scalars().all()
+
+    if not rows:
+        # Fall back to standard _select_candidates if no discovery data
+        logger.info("get_top_candidates.fallback_to_select_candidates")
+        canonical_candidates = await _select_candidates(session, limit)
+        return [
+            {
+                "id":                     None,
+                "canonical_product_id":   str(cp.id),
+                "canonical_sku":          cp.canonical_sku,
+                "name":                   cp.name,
+                "brand":                  cp.brand,
+                "last_price":             float(cp.last_price) if cp.last_price else None,
+                "final_score":            None,
+                "trend_score":            None,
+                "margin_score":           None,
+                "competition_score":      None,
+                "supplier_score":         None,
+                "content_score":          None,
+                "already_published":      False,
+                "status":                 "candidate",
+                "source":                 "fallback",
+            }
+            for cp in canonical_candidates
+        ]
+
+    results = []
+    for cand in rows:
+        # Fetch canonical product data
+        cp = (await session.execute(
+            select(CanonicalProduct).where(
+                CanonicalProduct.id == cand.canonical_product_id
+            ).limit(1)
+        )).scalar_one_or_none()
+
+        if cp is None:
+            continue
+
+        # Check Shopify mapping (already published?)
+        mapping = (await session.execute(
+            select(ShopifyMapping).where(
+                ShopifyMapping.canonical_product_id == cp.id
+            ).limit(1)
+        )).scalar_one_or_none()
+        already_published = (
+            mapping is not None
+            and mapping.shopify_product_id is not None
+            and not str(mapping.shopify_product_id).startswith("dryrun-")
+        )
+
+        results.append({
+            "id":                     str(cand.id),
+            "canonical_product_id":   str(cp.id),
+            "canonical_sku":          cp.canonical_sku,
+            "name":                   cp.name,
+            "brand":                  cp.brand,
+            "last_price":             float(cp.last_price) if cp.last_price else None,
+            "final_score":            float(cand.final_score),
+            "trend_score":            float(cand.trend_score),
+            "margin_score":           float(cand.margin_score),
+            "competition_score":      float(cand.competition_score),
+            "supplier_score":         float(cand.supplier_score),
+            "content_score":          float(cand.content_score),
+            "already_published":      already_published,
+            "status":                 cand.status,
+            "source":                 "discovery",
+        })
+
+    return results

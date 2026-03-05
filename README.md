@@ -1999,3 +1999,144 @@ pytest -q -m "not integration and not slow" --timeout=30
 - [x] 3 admin API endpoints (VIEWER/OPERATOR roles)
 - [x] 14 mock-only tests — **total 358 passed**, 66 deselected
 - [x] CI green ✅
+
+---
+
+## Sprint 15 – AI Product Discovery Pipeline
+
+### Overview
+Automated trend-signal collection → canonical product matching → multi-factor scoring → ranked candidate list → one-click Shopify publish.
+
+### Architecture
+```
+TikTok (mock) ──┐
+Amazon (mock) ──┤→ discovery_service.run_product_discovery()
+                │       │
+                │   product_matcher   (fuzzy match to canonical)
+                │   product_scoring   (weighted formula)
+                │       │
+                └── trend_products table
+                    product_candidates table (top-50 daily)
+                        │
+                    Admin API (/admin/discovery/*)
+                    Dashboard (/dashboard/discovery)
+                        │
+                    publish_service.get_top_candidates()
+```
+
+### Scoring Formula
+```
+final_score = trend_score     × 0.35
+            + margin_score    × 0.25
+            + competition_score × 0.20
+            + supplier_score  × 0.10
+            + content_score   × 0.10
+```
+All component scores are normalised to **[0.0, 1.0]**.
+
+### New Files
+| File | Description |
+|---|---|
+| `migrations/0016_trend_products.sql` | trend_products table |
+| `migrations/0017_product_candidates.sql` | product_candidates table |
+| `app/models/trend_product.py` | TrendProduct ORM model |
+| `app/models/product_candidate.py` | ProductCandidate ORM model |
+| `app/services/trend_collectors/tiktok_trends.py` | TikTok trend collector (mock) |
+| `app/services/trend_collectors/amazon_bestsellers.py` | Amazon bestseller collector (mock) |
+| `app/services/product_matcher.py` | Multi-pass fuzzy product matcher |
+| `app/services/product_scoring.py` | Weighted scoring engine |
+| `app/services/discovery_service.py` | Pipeline orchestrator + `get_top_candidates()` |
+| `app/workers/tasks_discovery.py` | Celery task + Redis lock + daily beat |
+| `dashboard/src/app/dashboard/discovery/page.tsx` | Discovery dashboard UI |
+| `tests/test_sprint15_discovery.py` | 22 mock-only tests |
+
+### Admin API Endpoints
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/admin/discovery/trends` | VIEWER | List trend signals (TikTok / Amazon) |
+| GET | `/admin/discovery/candidates` | VIEWER | List top product candidates |
+| POST | `/admin/discovery/run` | OPERATOR | Run discovery pipeline (dry_run=true safe) |
+| POST | `/admin/discovery/publish/{candidate_id}` | OPERATOR | Publish candidate to Shopify |
+
+### Curl Commands
+
+```bash
+# 1. Get token
+TOKEN=$(curl -s -X POST http://localhost:8000/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"adminpass"}' | jq -r .access_token)
+
+# 2. Run discovery (dry run – safe)
+curl -X POST "http://localhost:8000/admin/discovery/run?dry_run=true&top_n=50" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 3. Run discovery (live – writes to DB)
+curl -X POST "http://localhost:8000/admin/discovery/run?dry_run=false&top_n=50" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 4. List top candidates
+curl "http://localhost:8000/admin/discovery/candidates?limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 5. List trend signals (TikTok only)
+curl "http://localhost:8000/admin/discovery/trends?source=tiktok&limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 6. List trend signals (Amazon only)
+curl "http://localhost:8000/admin/discovery/trends?source=amazon_bestsellers&limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 7. Publish a specific candidate (dry run first)
+CANDIDATE_ID="<uuid-from-candidates-list>"
+curl -X POST "http://localhost:8000/admin/discovery/publish/${CANDIDATE_ID}?dry_run=true" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 8. Publish a specific candidate (live)
+curl -X POST "http://localhost:8000/admin/discovery/publish/${CANDIDATE_ID}?dry_run=false" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+```
+
+### Configuration
+
+| Env Var | Default | Description |
+|---|---|---|
+| `DISCOVERY_ENABLED` | `0` | Set to `1` to enable Celery beat schedule |
+| `DISCOVERY_CRON` | `0 2 * * *` | Cron expression for daily discovery (02:00 KST) |
+| `DISCOVERY_LOCK_TTL` | `1800` | Redis lock TTL in seconds (30 min) |
+
+### Fuzzy Matching Algorithm
+Multi-pass matching (highest-confidence first):
+1. **Pass 1** – Exact slug match against `canonical_sku`
+2. **Pass 2** – Exact brand + normalised name match
+3. **Pass 3** – Fuzzy token overlap ≥ 0.55 (Jaccard similarity)
+4. **Pass 4** – Brand + first name token fallback
+5. **Pass 5** – No match → `None` (signal discarded)
+
+### Celery Beat Schedule
+```python
+# Enabled with DISCOVERY_ENABLED=1
+# Default: daily at 02:00 KST (DISCOVERY_CRON="0 2 * * *")
+run_discovery_pipeline.apply_async(kwargs={"dry_run": False, "top_n": 50})
+```
+
+### make test-fast Output
+```
+$ pytest -q -m "not integration and not slow" --timeout=30
+380 passed, 66 deselected, 10 warnings in 13.46s
+```
+
+### Definition of Done — Sprint 15
+- [x] `migrations/0016_trend_products.sql` — trend_products table
+- [x] `migrations/0017_product_candidates.sql` — product_candidates table
+- [x] ORM models: `TrendProduct`, `ProductCandidate`
+- [x] Trend collectors: TikTok (15 mock signals) + Amazon bestsellers (15 mock signals)
+- [x] `product_matcher.py` — 4-pass fuzzy matching, pure Python
+- [x] `product_scoring.py` — weighted formula, all components 0–1
+- [x] `discovery_service.py` — full pipeline, top-50 trim, dedup by canonical
+- [x] `publish_service.py` — `get_top_candidates()` integration
+- [x] `tasks_discovery.py` — Celery task + Redis lock + beat schedule
+- [x] 4 admin API endpoints (`/admin/discovery/*`)
+- [x] Dashboard `/dashboard/discovery` — table + Run + Publish buttons
+- [x] 22 mock-only tests — **total 380 passed**, 66 deselected
+- [x] CI green ✅
