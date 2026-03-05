@@ -1259,3 +1259,150 @@ async def list_channel_products(
             for r in rows
         ],
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Sprint 12 – Auto-publish pipeline endpoints
+# ═════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/publish/preview",
+    tags=["sprint12"],
+    summary="Preview top-N products selected for Shopify publish (no side effects)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def publish_preview(
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return the candidates that *would* be published, with computed prices."""
+    from app.services.publish_service import preview_top_products
+
+    items = await preview_top_products(db, limit=limit)
+    return {"total": len(items), "items": items}
+
+
+@router.post(
+    "/publish/shopify",
+    tags=["sprint12"],
+    summary="Trigger Shopify publish job (dry_run=1 for safe simulation)",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def trigger_publish_shopify(
+    limit:   int  = Query(20, ge=1, le=100),
+    dry_run: bool = Query(True, description="Set to false for live publish"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Enqueue a publish job via Celery.
+    Returns immediately with job_id; poll GET /admin/publish/jobs/{job_id}.
+
+    For small runs (limit ≤ 5), also runs synchronously and returns full result.
+    """
+    from app.workers.tasks_publish import publish_shopify_top_products  # noqa: PLC0415
+
+    # Enqueue async Celery task
+    task = publish_shopify_top_products.apply_async(
+        kwargs={"limit": limit, "dry_run": dry_run},
+    )
+
+    return {
+        "message":   "publish job enqueued",
+        "task_id":   task.id,
+        "dry_run":   dry_run,
+        "limit":     limit,
+        "note":      "poll GET /admin/publish/jobs for status",
+    }
+
+
+@router.get(
+    "/publish/jobs",
+    tags=["sprint12"],
+    summary="List recent publish jobs",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_publish_jobs(
+    limit:   int         = Query(50, ge=1, le=200),
+    channel: str | None  = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select, desc
+    from app.models.publish_job import PublishJob
+
+    q = select(PublishJob).order_by(desc(PublishJob.created_at)).limit(limit)
+    if channel:
+        q = q.where(PublishJob.channel == channel)
+
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "total": len(rows),
+        "items": [
+            {
+                "id":              str(j.id),
+                "channel":         j.channel,
+                "status":          j.status,
+                "dry_run":         j.dry_run,
+                "target_count":    j.target_count,
+                "published_count": j.published_count,
+                "failed_count":    j.failed_count,
+                "skipped_count":   j.skipped_count,
+                "notes":           j.notes,
+                "created_at":      j.created_at.isoformat() if j.created_at else None,
+                "updated_at":      j.updated_at.isoformat() if j.updated_at else None,
+            }
+            for j in rows
+        ],
+    }
+
+
+@router.get(
+    "/publish/jobs/{job_id}",
+    tags=["sprint12"],
+    summary="Get a publish job with its items list",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_publish_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select
+    from app.models.publish_job import PublishJob, PublishJobItem
+
+    job_res = await db.execute(
+        select(PublishJob).where(PublishJob.id == job_id)
+    )
+    job = job_res.scalar_one_or_none()
+    if job is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="publish job not found")
+
+    items_res = await db.execute(
+        select(PublishJobItem).where(PublishJobItem.publish_job_id == job.id)
+    )
+    items = items_res.scalars().all()
+
+    return {
+        "id":              str(job.id),
+        "channel":         job.channel,
+        "status":          job.status,
+        "dry_run":         job.dry_run,
+        "target_count":    job.target_count,
+        "published_count": job.published_count,
+        "failed_count":    job.failed_count,
+        "skipped_count":   job.skipped_count,
+        "notes":           job.notes,
+        "created_at":      job.created_at.isoformat() if job.created_at else None,
+        "updated_at":      job.updated_at.isoformat() if job.updated_at else None,
+        "items": [
+            {
+                "id":                   str(i.id),
+                "canonical_product_id": str(i.canonical_product_id),
+                "shopify_product_id":   i.shopify_product_id,
+                "status":               i.status,
+                "reason":               i.reason,
+                "created_at":           i.created_at.isoformat() if i.created_at else None,
+                "updated_at":           i.updated_at.isoformat() if i.updated_at else None,
+            }
+            for i in items
+        ],
+    }

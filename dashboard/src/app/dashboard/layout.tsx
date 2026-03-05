@@ -5,11 +5,12 @@ import { useAuth } from "@/lib/auth";
 import clsx from "clsx";
 
 const NAV = [
-  { href: "/dashboard",          label: "Overview"  },
-  { href: "/dashboard/orders",   label: "Orders"    },
-  { href: "/dashboard/metrics",  label: "Metrics"   },
-  { href: "/dashboard/tickets",  label: "Tickets"   },
-  { href: "/dashboard/health",   label: "Health"    },
+  { href: "/dashboard",           label: "Overview"  },
+  { href: "/dashboard/orders",    label: "Orders"    },
+  { href: "/dashboard/metrics",   label: "Metrics"   },
+  { href: "/dashboard/tickets",   label: "Tickets"   },
+  { href: "/dashboard/health",    label: "Health"    },
+  { href: "/dashboard/publish",   label: "🚀 Publish" },  // Sprint 12
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

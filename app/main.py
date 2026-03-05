@@ -26,6 +26,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     from app.models.ticket import Base as TicketBase
     from app.models.webhook_event import Base as WebhookEventBase      # Sprint 10
     from app.models.channel_order import Base as ChannelOrderBase      # Sprint 10
+    from app.models.publish_job import Base as PublishJobBase          # Sprint 12
 
     async with engine.begin() as conn:
         await conn.run_sync(OrderBase.metadata.create_all)
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
         await conn.run_sync(TicketBase.metadata.create_all)
         await conn.run_sync(WebhookEventBase.metadata.create_all)      # Sprint 10
         await conn.run_sync(ChannelOrderBase.metadata.create_all)      # Sprint 10
+        await conn.run_sync(PublishJobBase.metadata.create_all)        # Sprint 12
 
     logger.info("database tables ensured")
     yield

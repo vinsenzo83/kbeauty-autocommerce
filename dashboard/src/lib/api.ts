@@ -234,3 +234,57 @@ export interface MetricsResponse {
 export async function getMetrics(): Promise<MetricsResponse> {
   return apiFetch("/admin/metrics");
 }
+
+// ── Sprint 12: Publish Pipeline ───────────────────────────────────────────────
+export interface PublishPreviewItem {
+  canonical_product_id: string;
+  canonical_sku: string;
+  name: string;
+  brand: string | null;
+  last_price: number | null;
+  pricing_enabled: boolean;
+  in_stock_suppliers: number;
+  has_shopify_mapping: boolean;
+  shopify_product_id: string | null;
+}
+
+export interface PublishJobItem {
+  id: string;
+  canonical_product_id: string;
+  shopify_product_id: string | null;
+  status: string;
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PublishJob {
+  id: string;
+  channel: string;
+  status: string;
+  dry_run: boolean;
+  target_count: number;
+  published_count: number;
+  failed_count: number;
+  skipped_count: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  items?: PublishJobItem[];
+}
+
+export async function getPublishPreview(limit = 20): Promise<{ total: number; items: PublishPreviewItem[] }> {
+  return apiFetch(`/admin/publish/preview?limit=${limit}`);
+}
+
+export async function triggerPublish(limit = 20, dryRun = true): Promise<{ message: string; task_id: string; dry_run: boolean; limit: number }> {
+  return apiFetch(`/admin/publish/shopify?limit=${limit}&dry_run=${dryRun}`, { method: "POST" });
+}
+
+export async function listPublishJobs(limit = 50): Promise<{ total: number; items: PublishJob[] }> {
+  return apiFetch(`/admin/publish/jobs?limit=${limit}`);
+}
+
+export async function getPublishJob(jobId: string): Promise<PublishJob> {
+  return apiFetch(`/admin/publish/jobs/${jobId}`);
+}

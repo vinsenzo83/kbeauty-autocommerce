@@ -1521,3 +1521,160 @@ app/webhooks/ingress.py – Integrated signature gate; Settings injected via DI
 - [x] All 320 tests pass — CI green
 - [x] README updated
 
+
+---
+
+## Sprint 12 — Auto-Publish Pipeline: Top 20 Products to Shopify
+
+### Overview
+
+Sprint 12 adds a full **Supplier → Canonical → Pricing → Shopify** publish pipeline with:
+
+- **DRY_RUN** mode: simulate without calling Shopify (default on admin triggers)
+- **Idempotent**: re-running updates existing products, never creates duplicates
+- **Audit trail**: every run creates a `publish_job` + per-product `publish_job_items`
+- **Redis lock**: prevents concurrent overlapping publish runs
+- **Dashboard UI**: `/dashboard/publish` with Preview, Dry-Run, and Live buttons
+
+---
+
+### New Files (Sprint 12)
+
+| File | Description |
+|------|-------------|
+| `migrations/0013_publish_jobs.sql` | Tables: `publish_jobs`, `publish_job_items` |
+| `app/models/publish_job.py` | SQLAlchemy ORM: `PublishJob`, `PublishJobItem` |
+| `app/services/publish_service.py` | Core publish engine + `preview_top_products` |
+| `app/workers/tasks_publish.py` | Celery task with Redis lock |
+| `dashboard/src/app/dashboard/publish/page.tsx` | Dashboard UI page |
+| `tests/test_sprint12_publish_engine.py` | 10 mock-only tests |
+
+**Modified files:** `app/routers/admin.py` (+4 endpoints), `app/main.py` (lifespan), `app/workers/celery_app.py` (include tasks_publish), `dashboard/src/lib/api.ts` (+types), `dashboard/src/app/dashboard/layout.tsx` (+nav)
+
+---
+
+### New API Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET`  | `/admin/publish/preview?limit=20` | VIEWER | Preview candidates + prices (no side effects) |
+| `POST` | `/admin/publish/shopify?limit=20&dry_run=true` | OPERATOR | Trigger publish job |
+| `GET`  | `/admin/publish/jobs?limit=50` | VIEWER | List recent jobs |
+| `GET`  | `/admin/publish/jobs/{job_id}` | VIEWER | Job detail + items list |
+
+---
+
+### curl Commands (Copy-Paste)
+
+#### 1. Get admin JWT token
+```bash
+TOKEN=$(curl -sX POST https://api.kbeautyflow.com/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@kbeauty.local","password":"admin1234"}' \
+  | jq -r '.access_token')
+echo "Token: $TOKEN"
+```
+
+#### 2. Preview top 20 products (safe — no writes)
+```bash
+curl -s "https://api.kbeautyflow.com/admin/publish/preview?limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq '.total, (.items[] | {sku:.canonical_sku, price:.last_price, in_stock:.in_stock_suppliers})'
+```
+
+#### 3. Dry-run publish (safe simulation — recommended first)
+```bash
+curl -sX POST "https://api.kbeautyflow.com/admin/publish/shopify?limit=20&dry_run=true" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+# Returns: { "message": "publish job enqueued", "task_id": "...", "dry_run": true }
+```
+
+#### 4. Live publish (⚠️ creates/updates real Shopify products)
+```bash
+# ⚠️  ALWAYS run dry-run first to verify. Then:
+curl -sX POST "https://api.kbeautyflow.com/admin/publish/shopify?limit=20&dry_run=false" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+```
+
+#### 5. List publish jobs
+```bash
+curl -s "https://api.kbeautyflow.com/admin/publish/jobs?limit=10" \
+  -H "Authorization: Bearer $TOKEN" | jq '.items[] | {id:.id, status:.status, dry_run:.dry_run, published:.published_count, failed:.failed_count}'
+```
+
+#### 6. Get job detail with items
+```bash
+JOB_ID="<job-id-from-above>"
+curl -s "https://api.kbeautyflow.com/admin/publish/jobs/$JOB_ID" \
+  -H "Authorization: Bearer $TOKEN" | jq '{status:.status, items: [.items[] | {shopify_id:.shopify_product_id, status:.status, reason:.reason}]}'
+```
+
+---
+
+### Product Selection Logic
+
+Products are selected in priority order:
+
+1. **Priority 1** – Has ≥1 IN_STOCK supplier **AND** `last_price` is set
+2. **Priority 2** – Has ≥1 IN_STOCK supplier (price will be computed)
+3. **Fallback** – Most-recently created canonical products
+
+---
+
+### Idempotency
+
+- If a `ShopifyMapping` already exists for a canonical product, **update** is called instead of create
+- Re-running the same job on the same products → updates, not duplicates
+- `publish_job_items` has `UNIQUE(publish_job_id, canonical_product_id)`
+
+---
+
+### Safety Notes
+
+1. **Always run dry-run first** (`dry_run=true`)
+2. Review preview results before going live
+3. Redis lock (`publish:shopify`, TTL 15 min) prevents concurrent runs
+4. Dashboard UI shows warning modal before live publish
+5. Failed items are recorded with `reason` — re-trigger only failed products
+
+---
+
+### Dashboard
+
+Navigate to: `https://dashboard.kbeautyflow.com/dashboard/publish`
+
+- **Preview Top 20** — shows candidates without writing
+- **Dry Run Publish** — simulates with `dryrun-<id>` Shopify IDs
+- **Live Publish** — requires confirmation modal
+- **Recent Jobs table** — click View to see per-product outcomes
+
+---
+
+### Test Coverage (Sprint 12)
+
+| Test | Description |
+|------|-------------|
+| `test_preview_returns_candidates` | Preview returns structured list |
+| `test_publish_creates_job_and_items_dry_run` | Job + items created; no Shopify call |
+| `test_dry_run_never_calls_shopify` | `create_or_update_product` not called |
+| `test_failure_reason_no_price` | pricing_disabled + no last_price → failed |
+| `test_failure_reason_no_supplier_in_stock` | generate_quote=None → failed |
+| `test_publish_idempotency_updates_existing_mapping` | No duplicate ShopifyMapping insert |
+| `test_publish_partial_status` | Mixed results → partial status |
+| `test_celery_task_lock_skips_concurrent` | Redis lock busy → skipped |
+| `test_admin_preview_endpoint_exists` | Route registered |
+| `test_admin_jobs_endpoint_exists` | Routes registered |
+
+---
+
+### Definition of Done — Sprint 12 ✅
+
+- [x] `GET /admin/publish/preview` returns product candidates with prices
+- [x] `POST /admin/publish/shopify?dry_run=true` creates job, no Shopify call
+- [x] `POST /admin/publish/shopify?dry_run=false` calls ShopifyProductService
+- [x] Re-running is idempotent (update, not duplicate)
+- [x] `publish_job` and `publish_job_items` persisted with status + reason
+- [x] Redis lock prevents concurrent runs
+- [x] Dashboard `/dashboard/publish` page deployed
+- [x] 10 mock-only tests pass — total 330 passed
+- [x] CI green
+
