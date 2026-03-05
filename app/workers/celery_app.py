@@ -23,6 +23,7 @@ celery_app = Celery(
         "app.workers.tasks_channels",          # Sprint 9
         "app.workers.tasks_publish",           # Sprint 12
         "app.workers.tasks_repricing",         # Sprint 13
+        "app.workers.tasks_fulfillment",       # Sprint 14
     ],
 )
 

@@ -128,7 +128,43 @@ async def handle_order_created(
         external_order_id=evt.external_id,
         order_id=str(row.id),
     )
+
+    # ── Sprint 14: enqueue auto-fulfillment Celery task ───────────────────────
+    _enqueue_fulfillment(str(row.id), channel=evt.channel)
+
     return row
+
+
+def _enqueue_fulfillment(channel_order_id: str, *, channel: str = "shopify") -> None:
+    """
+    Enqueue the process_order_fulfillment Celery task.
+
+    Only fires for Shopify orders (other channels may not support auto-fulfillment yet).
+    Silently no-ops if Celery is unavailable (e.g. during unit tests without broker).
+    """
+    if channel != "shopify":
+        return
+    try:
+        from app.workers.tasks_fulfillment import process_order_fulfillment
+        # Use apply_async with ignore_result=True to avoid blocking on broker connection.
+        # In test environments the task is always_eager or broker is absent.
+        result = process_order_fulfillment.apply_async(
+            kwargs={"channel_order_id": channel_order_id, "dry_run": False},
+            countdown=2,  # small delay to ensure DB commit completes first
+        )
+        logger.info(
+            "order_created.fulfillment_enqueued",
+            channel_order_id=channel_order_id,
+            task_id=getattr(result, "id", "unknown"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Never let task enqueue failure break the webhook response.
+        # This is expected in test environments without a real Redis broker.
+        logger.warning(
+            "order_created.fulfillment_enqueue_failed",
+            channel_order_id=channel_order_id,
+            error=str(exc),
+        )
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

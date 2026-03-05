@@ -1684,3 +1684,115 @@ async def get_repricing_run(
             for i in items
         ],
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Sprint 14 – Supplier Order / Auto-Fulfillment Admin API
+# ═════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/supplier-orders",
+    tags=["sprint14"],
+    summary="List supplier orders with optional status filter",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_supplier_orders(
+    status: str | None = Query(None, description="Filter by status (placed, shipped, failed, ...)"),
+    supplier: str | None = Query(None, description="Filter by supplier name"),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select, desc
+    from app.models.supplier_order import SupplierOrder
+
+    q = select(SupplierOrder).order_by(desc(SupplierOrder.created_at)).limit(limit)
+    if status:
+        q = q.where(SupplierOrder.status == status)
+    if supplier:
+        q = q.where(SupplierOrder.supplier == supplier.upper())
+
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "total": len(rows),
+        "items": [
+            {
+                "id":                str(r.id),
+                "channel_order_id":  str(r.channel_order_id),
+                "supplier":          r.supplier,
+                "supplier_order_id": r.supplier_order_id,
+                "supplier_status":   r.supplier_status,
+                "tracking_number":   r.tracking_number,
+                "tracking_carrier":  r.tracking_carrier,
+                "cost":              float(r.cost) if r.cost else None,
+                "currency":          r.currency,
+                "status":            r.status,
+                "failure_reason":    r.failure_reason,
+                "retry_count":       r.retry_count,
+                "created_at":        r.created_at.isoformat() if r.created_at else None,
+                "updated_at":        r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get(
+    "/supplier-orders/{supplier_order_id}",
+    tags=["sprint14"],
+    summary="Get supplier order detail",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_supplier_order(
+    supplier_order_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select
+    from app.models.supplier_order import SupplierOrder
+    from fastapi import HTTPException
+
+    res = await db.execute(
+        select(SupplierOrder).where(SupplierOrder.id == supplier_order_id)
+    )
+    so = res.scalar_one_or_none()
+    if so is None:
+        raise HTTPException(status_code=404, detail="supplier order not found")
+
+    return {
+        "id":                str(so.id),
+        "channel_order_id":  str(so.channel_order_id),
+        "supplier":          so.supplier,
+        "supplier_order_id": so.supplier_order_id,
+        "supplier_status":   so.supplier_status,
+        "tracking_number":   so.tracking_number,
+        "tracking_carrier":  so.tracking_carrier,
+        "cost":              float(so.cost) if so.cost else None,
+        "currency":          so.currency,
+        "status":            so.status,
+        "failure_reason":    so.failure_reason,
+        "retry_count":       so.retry_count,
+        "created_at":        so.created_at.isoformat() if so.created_at else None,
+        "updated_at":        so.updated_at.isoformat() if so.updated_at else None,
+    }
+
+
+@router.post(
+    "/supplier-orders/trigger/{channel_order_id}",
+    tags=["sprint14"],
+    summary="Manually trigger fulfillment for a channel order",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def trigger_fulfillment(
+    channel_order_id: str,
+    dry_run: bool = Query(False, description="Dry run — do not call supplier API"),
+) -> dict[str, Any]:
+    from app.workers.tasks_fulfillment import process_order_fulfillment
+    task = process_order_fulfillment.apply_async(
+        kwargs={"channel_order_id": channel_order_id, "dry_run": dry_run}
+    )
+    return {
+        "message":          "fulfillment task enqueued",
+        "task_id":          task.id,
+        "channel_order_id": channel_order_id,
+        "dry_run":          dry_run,
+        "note":             "poll GET /admin/supplier-orders?status=placed for result",
+    }

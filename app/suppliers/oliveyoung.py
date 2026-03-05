@@ -46,7 +46,47 @@ class OliveYoungClient(SupplierClient):
         self._password = os.getenv("OLIVEYOUNG_PASSWORD", "")
         self._storage  = Path(os.getenv("STORAGE_PATH", "./storage"))
 
-    # ── Public interface ──────────────────────────────────────────────────────
+    # ── Sprint 14: new fulfillment interface ─────────────────────────────────
+
+    async def place_order(self, order_payload: dict) -> "PlacedOrder":
+        """Place supplier order. Stub mode when credentials absent."""
+        from app.suppliers.base import PlacedOrder
+
+        channel_order_id = order_payload.get("channel_order_id", "unknown")
+
+        if not self._email:
+            logger.info(
+                "oliveyoung.place_order.stub",
+                channel_order_id=channel_order_id,
+            )
+            return PlacedOrder(
+                supplier_order_id=f"OY-STUB-{channel_order_id[:8]}",
+                status="placed",
+                cost=order_payload.get("cost"),
+                currency=order_payload.get("currency", "USD"),
+                raw={"mode": "stub"},
+            )
+        raise NotImplementedError("OliveYoung real place_order requires Playwright.")
+
+    async def get_order_status(self, supplier_order_id: str) -> "OrderStatus":
+        """Fetch order status. Stub mode when credentials absent."""
+        from app.suppliers.base import OrderStatus
+
+        if not self._email:
+            logger.info(
+                "oliveyoung.get_order_status.stub",
+                supplier_order_id=supplier_order_id,
+            )
+            return OrderStatus(
+                supplier_order_id=supplier_order_id,
+                status="shipped",
+                tracking_number=f"OY-TRK-{supplier_order_id[-6:]}",
+                tracking_carrier="UPS",
+                raw={"mode": "stub"},
+            )
+        raise NotImplementedError("OliveYoung real get_order_status requires Playwright.")
+
+    # ── Legacy Sprint 2–7 interface ───────────────────────────────────────────
 
     async def create_order(self, order: "Order") -> str:
         return await self._playwright_create_order(order)

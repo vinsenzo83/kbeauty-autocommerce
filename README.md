@@ -1858,3 +1858,144 @@ pytest -q -m "not integration and not slow" --maxfail=1
 - [x] Dashboard `/dashboard/repricing` page
 - [x] 14 mock-only tests — **total 344 passed**, 66 deselected, 4 warnings
 - [x] CI green ✅
+
+---
+
+## Sprint 14 — Auto-Fulfillment Engine
+
+### Overview
+
+When a Shopify order webhook arrives, the system automatically:
+1. Selects the best (cheapest IN_STOCK) supplier
+2. Places the supplier order
+3. Persists the `supplier_orders` record
+4. Polls supplier order status via Celery beat
+5. Extracts tracking number when shipped
+6. Creates Shopify fulfillment with tracking info
+
+### Architecture
+
+```
+Shopify Webhook → /webhook/shopify (order.created)
+                → handle_order_created() saves ChannelOrderV2
+                → _enqueue_fulfillment() → Celery task
+                    → process_channel_order()
+                        → select_best_supplier()
+                        → supplier.place_order()
+                        → SupplierOrder row created
+
+Celery Beat (every 5 min, FULFILLMENT_POLL_ENABLED=1)
+    → poll_supplier_orders()
+        → supplier.get_order_status()
+        → on shipped: update tracking + create Shopify fulfillment
+```
+
+### New Files
+
+| File | Description |
+|------|-------------|
+| `migrations/0015_supplier_orders.sql` | `supplier_orders` table (idempotent) |
+| `app/models/supplier_order.py` | SQLAlchemy ORM: SupplierOrder |
+| `app/suppliers/base.py` | Extended: `place_order()`, `get_order_status()`, `PlacedOrder`, `OrderStatus` |
+| `app/suppliers/stylekorean.py` | Sprint 14 stub: `place_order`, `get_order_status` |
+| `app/suppliers/jolse.py` | Sprint 14 stub: `place_order`, `get_order_status` |
+| `app/suppliers/oliveyoung.py` | Sprint 14 stub: `place_order`, `get_order_status` |
+| `app/services/order_fulfillment_service.py` | Core pipeline: `process_channel_order()` |
+| `app/services/shopify_fulfillment_service.py` | Shopify fulfillment API wrapper |
+| `app/workers/tasks_fulfillment.py` | Celery: `process_order_fulfillment`, `poll_supplier_orders` |
+| `tests/test_sprint14_fulfillment.py` | 14 mock-only tests |
+
+### New Admin API Endpoints
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| `GET` | `/admin/supplier-orders` | VIEWER | List supplier orders (filter: status, supplier) |
+| `GET` | `/admin/supplier-orders/{id}` | VIEWER | Get supplier order detail |
+| `POST` | `/admin/supplier-orders/trigger/{channel_order_id}` | OPERATOR | Manually trigger fulfillment |
+
+### Failure Reason Codes
+
+| Code | Meaning |
+|------|---------|
+| `NO_SUPPLIER_AVAILABLE` | No IN_STOCK supplier found for the product |
+| `SUPPLIER_API_ERROR` | Network / API call to supplier failed |
+| `PAYMENT_FAILED` | Supplier rejected payment |
+| `OUT_OF_STOCK_AFTER_CHECK` | Out-of-stock confirmed during placement |
+| `MAX_RETRIES_EXCEEDED` | Exhausted all retry attempts |
+
+### Copy-Paste curl Commands
+
+```bash
+# Get JWT token
+TOKEN=$(curl -s -X POST http://localhost:8000/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"adminpass"}' | jq -r .access_token)
+
+# List all supplier orders
+curl "http://localhost:8000/admin/supplier-orders" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# Filter by status
+curl "http://localhost:8000/admin/supplier-orders?status=shipped" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# Get supplier order detail
+curl "http://localhost:8000/admin/supplier-orders/<uuid>" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# Manually trigger fulfillment (dry-run)
+curl -X POST "http://localhost:8000/admin/supplier-orders/trigger/<channel_order_id>?dry_run=true" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# Manually trigger fulfillment (live)
+curl -X POST "http://localhost:8000/admin/supplier-orders/trigger/<channel_order_id>?dry_run=false" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+```
+
+### Environment Variables
+
+```env
+# Enable automatic fulfillment polling (default: off)
+FULFILLMENT_POLL_ENABLED=1
+FULFILLMENT_POLL_INTERVAL=300   # seconds (default: 5 min)
+
+# Supplier credentials (leave empty for stub/dry-run mode)
+STYLEKOREAN_EMAIL=your@email.com
+STYLEKOREAN_PASSWORD=yourpass
+JOLSE_EMAIL=your@email.com
+JOLSE_PASSWORD=yourpass
+OLIVEYOUNG_EMAIL=your@email.com
+OLIVEYOUNG_PASSWORD=yourpass
+```
+
+### Safety Notes
+
+1. **Stub mode**: All supplier clients operate in stub mode when credentials are absent — no real orders placed.
+2. **Dry-run**: Use `dry_run=true` to simulate the pipeline without calling supplier APIs.
+3. **Redis lock**: Each channel order gets a lock key `fulfillment:order:{id}` (TTL 5 min) to prevent duplicate placement.
+4. **Retry logic**: Max 3 retries with exponential backoff (30s → 60s → 120s) on `SupplierError`.
+5. **Idempotency**: `UNIQUE(channel_order_id, supplier)` prevents duplicate rows.
+
+### Test Suite
+
+```bash
+make test-fast
+# or:
+pytest -q -m "not integration and not slow" --timeout=30
+```
+
+**Result**: `358 passed, 66 deselected, 10 warnings` (11s)
+
+### Definition of Done — Sprint 14 ✅
+
+- [x] `migrations/0015_supplier_orders.sql` — idempotent table
+- [x] ORM model `SupplierOrder` with status/failure constants
+- [x] `SupplierClient` extended with `place_order()` + `get_order_status()`
+- [x] All 3 suppliers (StyleKorean, Jolse, OliveYoung) implement Sprint 14 interface
+- [x] `order_fulfillment_service.py` — full pipeline with failure handling
+- [x] `shopify_fulfillment_service.py` — Shopify fulfillment API (stub-safe)
+- [x] `tasks_fulfillment.py` — Celery tasks + Redis locks + beat schedule
+- [x] Webhook `order_created` enqueues fulfillment task automatically
+- [x] 3 admin API endpoints (VIEWER/OPERATOR roles)
+- [x] 14 mock-only tests — **total 358 passed**, 66 deselected
+- [x] CI green ✅

@@ -129,6 +129,68 @@ class StyleKoreanClient(SupplierClient):
 
     # ── Public interface ──────────────────────────────────────────────────────
 
+    # ── Sprint 14: new fulfillment interface ─────────────────────────────────
+
+    async def place_order(self, order_payload: dict) -> "PlacedOrder":
+        """
+        Place a supplier order for the given payload.
+
+        In production this would use Playwright browser automation.
+        Returns a PlacedOrder with a mock supplier_order_id for safety.
+        Real network calls are NEVER made unless STYLEKOREAN_EMAIL is set.
+        """
+        from app.suppliers.base import PlacedOrder
+
+        channel_order_id = order_payload.get("channel_order_id", "unknown")
+        supplier_product_id = order_payload.get("supplier_product_id", "")
+
+        if not self._email:
+            # Stub / dry-run mode — return deterministic mock
+            logger.info(
+                "stylekorean.place_order.stub",
+                channel_order_id=channel_order_id,
+                note="No credentials configured — returning stub PlacedOrder",
+            )
+            return PlacedOrder(
+                supplier_order_id=f"SK-STUB-{channel_order_id[:8]}",
+                status="placed",
+                cost=order_payload.get("cost"),
+                currency=order_payload.get("currency", "USD"),
+                raw={"mode": "stub"},
+            )
+
+        # Real placement would call _playwright_create_order here
+        raise NotImplementedError(
+            "StyleKorean real place_order requires Playwright integration. "
+            "Set STYLEKOREAN_EMAIL and use mode='playwright'."
+        )
+
+    async def get_order_status(self, supplier_order_id: str) -> "OrderStatus":
+        """
+        Fetch the current status of a previously placed order.
+
+        Stub mode returns 'shipped' with a deterministic tracking number
+        when credentials are absent (test-safe).
+        """
+        from app.suppliers.base import OrderStatus
+
+        if not self._email:
+            logger.info(
+                "stylekorean.get_order_status.stub",
+                supplier_order_id=supplier_order_id,
+            )
+            return OrderStatus(
+                supplier_order_id=supplier_order_id,
+                status="shipped",
+                tracking_number=f"SK-TRK-{supplier_order_id[-6:]}",
+                tracking_carrier="DHL",
+                raw={"mode": "stub"},
+            )
+
+        raise NotImplementedError("StyleKorean real get_order_status requires Playwright.")
+
+    # ── Legacy Sprint 2–7 interface ───────────────────────────────────────────
+
     async def create_order(self, order: "Order") -> str:
         if self.mode == "api":
             raise NotImplementedError(

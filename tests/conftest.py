@@ -23,6 +23,30 @@ pytest_plugins = ["anyio"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Celery: use eager execution in tests so apply_async() never touches Redis.
+# This prevents 20-second Redis retry loops when broker is unavailable.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def celery_eager_mode():
+    """
+    Force Celery into always-eager mode for every test.
+
+    apply_async() calls are executed synchronously in-process instead of
+    being dispatched to a Redis broker.  Prevents long connection-retry
+    delays when Redis is not running locally.
+    """
+    try:
+        from app.workers.celery_app import celery_app
+        celery_app.conf.task_always_eager = True
+        celery_app.conf.task_eager_propagates = False
+        yield
+        celery_app.conf.task_always_eager = False
+    except Exception:  # pragma: no cover
+        yield  # silently skip if celery_app cannot be imported
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Auto-mark tests that live in certain files as `integration` or `slow`
 # so `make test-fast` can skip them without manual decoration.
 # ─────────────────────────────────────────────────────────────────────────────
