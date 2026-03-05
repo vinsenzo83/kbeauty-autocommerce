@@ -1071,7 +1071,7 @@ async def trigger_channel_inventory_sync() -> dict[str, Any]:
     summary="List channel orders",
     dependencies=[Depends(require_role("VIEWER"))],
 )
-async def list_channel_orders(
+async def list_legacy_channel_orders(
     channel: str | None = Query(None, description="Filter by channel slug"),
     status: str | None  = Query(None, description="Filter by order status"),
     limit:  int         = Query(50, ge=1, le=200),
@@ -1137,3 +1137,125 @@ async def _log_event(
     )
     db.add(event)
     await db.flush()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sprint 10: Webhook Ingress + Multi-Channel E2E
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/webhook-events",
+    tags=["sprint10"],
+    summary="List webhook events (idempotency log)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_webhook_events(
+    limit:   int = Query(50, ge=1, le=500),
+    channel: str | None = Query(None),
+    topic:   str | None = Query(None),
+    status_filter: str | None = Query(None, alias="status"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select, desc
+    from app.models.webhook_event import WebhookEvent
+
+    q = select(WebhookEvent).order_by(desc(WebhookEvent.received_at)).limit(limit)
+    if channel:
+        q = q.where(WebhookEvent.channel == channel)
+    if topic:
+        q = q.where(WebhookEvent.topic == topic)
+    if status_filter:
+        q = q.where(WebhookEvent.status == status_filter)
+
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "total": len(rows),
+        "items": [
+            {
+                "id":          str(r.id),
+                "event_id":    r.event_id,
+                "channel":     r.channel,
+                "topic":       r.topic,
+                "external_id": r.external_id,
+                "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
+                "received_at": r.received_at.isoformat() if r.received_at else None,
+                "status":      r.status,
+                "error":       r.error,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get(
+    "/channel-orders",
+    tags=["sprint10"],
+    summary="List canonical channel orders (from webhook ingress)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_channel_orders(
+    limit:   int = Query(50, ge=1, le=500),
+    channel: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select, desc
+    from app.models.channel_order import ChannelOrderV2
+
+    q = select(ChannelOrderV2).order_by(desc(ChannelOrderV2.created_at)).limit(limit)
+    if channel:
+        q = q.where(ChannelOrderV2.channel == channel)
+
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "total": len(rows),
+        "items": [
+            {
+                "id":                str(r.id),
+                "external_order_id": r.external_order_id,
+                "channel":           r.channel,
+                "currency":          r.currency,
+                "total_price":       float(r.total_price) if r.total_price else None,
+                "buyer_name":        r.buyer_name,
+                "buyer_email":       r.buyer_email,
+                "status":            r.status,
+                "created_at":        r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get(
+    "/channel-products",
+    tags=["sprint10"],
+    summary="List canonical products (from webhook ingress)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_channel_products(
+    limit:   int = Query(50, ge=1, le=500),
+    channel: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import select, desc
+    from app.models.canonical_product import CanonicalProduct
+
+    q = select(CanonicalProduct).order_by(desc(CanonicalProduct.created_at)).limit(limit)
+    # filter by channel-derived SKU prefix
+    if channel:
+        q = q.where(CanonicalProduct.canonical_sku.like(f"{channel}-%"))
+
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "total": len(rows),
+        "items": [
+            {
+                "id":            str(r.id),
+                "canonical_sku": r.canonical_sku,
+                "name":          r.name,
+                "brand":         r.brand,
+                "last_price":    float(r.last_price) if r.last_price else None,
+                "created_at":    r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+    }

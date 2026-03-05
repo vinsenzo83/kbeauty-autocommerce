@@ -24,6 +24,8 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     from app.models.product import Base as ProductBase
     from app.models.admin_user import Base as AdminUserBase
     from app.models.ticket import Base as TicketBase
+    from app.models.webhook_event import Base as WebhookEventBase      # Sprint 10
+    from app.models.channel_order import Base as ChannelOrderBase      # Sprint 10
 
     async with engine.begin() as conn:
         await conn.run_sync(OrderBase.metadata.create_all)
@@ -31,6 +33,8 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
         await conn.run_sync(ProductBase.metadata.create_all)
         await conn.run_sync(AdminUserBase.metadata.create_all)
         await conn.run_sync(TicketBase.metadata.create_all)
+        await conn.run_sync(WebhookEventBase.metadata.create_all)      # Sprint 10
+        await conn.run_sync(ChannelOrderBase.metadata.create_all)      # Sprint 10
 
     logger.info("database tables ensured")
     yield
@@ -43,11 +47,12 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     settings = get_settings()
 
     from app.webhooks.shopify import router as shopify_router
+    from app.webhooks.ingress import router as ingress_router   # Sprint 10
     from app.routers.admin import router as admin_router
 
     app = FastAPI(
         title="KBeauty AutoCommerce API",
-        version="0.5.0",
+        version="0.6.0",
         debug=settings.DEBUG,
         lifespan=lifespan if use_lifespan else None,
     )
@@ -59,8 +64,9 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(shopify_router, prefix="/webhooks/shopify", tags=["webhooks"])
-    app.include_router(admin_router, prefix="/admin", tags=["admin"])
+    app.include_router(shopify_router, prefix="/webhooks/shopify", tags=["webhooks-legacy"])
+    app.include_router(ingress_router, prefix="/webhook",          tags=["webhooks"])   # Sprint 10
+    app.include_router(admin_router,   prefix="/admin",            tags=["admin"])
 
     @app.get("/health", tags=["ops"])
     async def health() -> dict[str, str]:

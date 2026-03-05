@@ -1,0 +1,83 @@
+{
+  "type": "PRODUCT_STATUS_CHANGE",
+  "shop_id": "7123456789",
+  "timestamp": 1704067200,
+  "data": {
+    "product_id": "1729579164882894277",
+    "title": "Laneige Lip Sleeping Mask Berry 20g",
+    "description": "<p>Nourishing overnight lip mask with vitamin C and berry mix complex.</p>",
+    "status": "ACTIVATE",
+    "category_id": "601310",
+    "brand_id": "7125",
+    "skus": [
+      {
+        "id": "1729580492756992393",
+        "seller_sku": "LANEIGE-LSM-BERRY",
+        "price": {
+          "currency": "USD",
+          "original_price": "19.99",
+          "sale_price": "17.99"
+        },
+        "stock_infos": [
+          {
+            "warehouse_id": "7043905884948491522",
+            "available_stock": 87
+          }
+        ],
+        "sales_attributes": [
+          {
+            "attribute_id": "101111",
+            "attribute_name": "Color",
+            "custom_value": "Berry"
+          }
+        ]
+      },
+      {
+        "id": "1729580492756992394",
+        "seller_sku": "LANEIGE-LSM-VANILL",
+        "price": {
+          "currency": "USD",
+          "original_price": "19.99",
+          "sale_price": "17.99"
+        },
+        "stock_infos": [
+          {
+            "warehouse_id": "7043905884948491522",
+            "available_stock": 54
+          }
+        ],
+        "sales_attributes": [
+          {
+            "attribute_id": "101111",
+            "attribute_name": "Color",
+            "custom_value": "Vanilla"
+          }
+        ]
+      }
+    ],
+    "main_images": [
+      {
+        "height": 800,
+        "width": 800,
+        "url": "https://p16-oecms.tiktokcdn.com/img/laneige-lip-mask.jpg",
+        "thumb_url": "https://p16-oecms.tiktokcdn.com/img/laneige-lip-mask-thumb.jpg",
+        "thumb_width": 200,
+        "thumb_height": 200
+      }
+    ],
+    "package_weight": {
+      "value": "0.050",
+      "unit": "KILOGRAM"
+    },
+    "package_dimensions": {
+      "length": "8.0",
+      "width": "6.0",
+      "height": "3.0",
+      "unit": "CENTIMETER"
+    },
+    "create_time": 1700000000,
+    "update_time": 1704067200,
+    "video": null,
+    "is_cod_open": true
+  }
+}

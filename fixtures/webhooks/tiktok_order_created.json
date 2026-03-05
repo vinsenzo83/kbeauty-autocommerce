@@ -1,0 +1,58 @@
+{
+  "type": "ORDER_STATUS_CHANGE",
+  "shop_id": "7123456789",
+  "timestamp": 1704067200,
+  "data": {
+    "order_id": "576462233419950401",
+    "order_status": "AWAITING_SHIPMENT",
+    "update_time": 1704067200,
+    "seller_note": "",
+    "payment_method_name": "TikTok Pay",
+    "is_sample_order": false,
+    "is_replace_order": false,
+    "is_cod": false,
+    "currency": "USD",
+    "total_price": "39.90",
+    "payment_info": {
+      "currency": "USD",
+      "total_amount": "39.90",
+      "sub_total": "35.98",
+      "shipping_fee": "3.92",
+      "platform_discount": "0.00",
+      "seller_discount": "0.00"
+    },
+    "recipient_address": {
+      "name": "Park Ji Sung",
+      "phone_number": "+15551234567",
+      "address_line1": "123 K-Beauty Lane",
+      "address_line2": "Apt 4B",
+      "city": "Los Angeles",
+      "state": "CA",
+      "zip_code": "90001",
+      "country_code": "US",
+      "district_info": []
+    },
+    "line_items": [
+      {
+        "product_id": "1729579164882894277",
+        "sku_id": "1729580492756992393",
+        "product_name": "Laneige Lip Sleeping Mask Berry 20g",
+        "sku_name": "Berry",
+        "quantity": 2,
+        "sale_price": "17.99",
+        "currency": "USD",
+        "seller_sku": "LANEIGE-LSM-BERRY",
+        "product_image": "https://p16-oecms.tiktokcdn.com/img/example.jpg",
+        "item_tax_rate": 0,
+        "platform_discount_amount": "0.00",
+        "seller_discount_amount": "0.00",
+        "small_image": "https://p16-oecms.tiktokcdn.com/img/example_small.jpg"
+      }
+    ],
+    "packages": [],
+    "create_time": 1704066000,
+    "paid_time": 1704067200,
+    "tracking_number": "",
+    "shipping_provider": ""
+  }
+}

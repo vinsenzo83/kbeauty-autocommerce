@@ -1,0 +1,66 @@
+{
+  "id": 632910392,
+  "title": "COSRX Snail Mucin 96% Power Repairing Essence 100ml",
+  "body_html": "<p>96% snail secretion filtrate for intensive hydration and repair</p>",
+  "vendor": "COSRX",
+  "product_type": "Serum",
+  "created_at": "2024-01-01T10:00:00+09:00",
+  "handle": "cosrx-snail-mucin-essence",
+  "updated_at": "2024-01-15T12:00:00+09:00",
+  "published_at": "2024-01-01T10:00:00+09:00",
+  "template_suffix": null,
+  "published_scope": "web",
+  "tags": "k-beauty, skincare, snail, essence, COSRX",
+  "status": "active",
+  "variants": [
+    {
+      "id": 808950810,
+      "product_id": 632910392,
+      "title": "100ml",
+      "price": "25.00",
+      "sku": "COSRX-SNL-100",
+      "position": 1,
+      "inventory_policy": "deny",
+      "compare_at_price": "30.00",
+      "fulfillment_service": "manual",
+      "inventory_management": "shopify",
+      "requires_shipping": true,
+      "taxable": true,
+      "barcode": "8809587750008",
+      "grams": 200,
+      "weight": 200.0,
+      "weight_unit": "g",
+      "inventory_item_id": 341629,
+      "inventory_quantity": 254
+    }
+  ],
+  "options": [
+    {
+      "id": 594680422,
+      "product_id": 632910392,
+      "name": "Size",
+      "position": 1,
+      "values": ["100ml"]
+    }
+  ],
+  "images": [
+    {
+      "id": 850703190,
+      "product_id": 632910392,
+      "position": 1,
+      "created_at": "2024-01-01T10:00:00+09:00",
+      "updated_at": "2024-01-01T10:00:00+09:00",
+      "alt": "COSRX Snail Mucin Essence",
+      "width": 800,
+      "height": 800,
+      "src": "https://cdn.shopify.com/s/files/1/cosrx-snail-essence.jpg",
+      "variant_ids": [808950810]
+    }
+  ],
+  "image": {
+    "id": 850703190,
+    "product_id": 632910392,
+    "position": 1,
+    "src": "https://cdn.shopify.com/s/files/1/cosrx-snail-essence.jpg"
+  }
+}

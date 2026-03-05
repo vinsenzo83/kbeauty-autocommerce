@@ -1,0 +1,74 @@
+{
+  "code": 8,
+  "timestamp": 1704067200,
+  "shop_id": 123456789,
+  "data": {
+    "item_id": 11111111,
+    "item_name": "Some Pumpkin Sleeping Mask 90ml (Updated)",
+    "description": "Nourishing overnight mask with pumpkin extract for deep hydration.",
+    "item_sku": "SP-PMPK-090",
+    "category_id": 100020,
+    "original_price": 12.00,
+    "currency": "MYR",
+    "stock": 150,
+    "status": "NORMAL",
+    "image": {
+      "image_id_list": ["abc123def456"],
+      "image_url_list": [
+        "https://cf.shopee.com.my/file/abc123def456"
+      ]
+    },
+    "weight": 0.15,
+    "dimension": {
+      "package_length": 10,
+      "package_width": 8,
+      "package_height": 5
+    },
+    "logistics": [
+      {
+        "logistic_id": 80002,
+        "logistic_name": "J&T Express",
+        "enabled": true,
+        "shipping_fee": 4.80,
+        "is_free": false
+      }
+    ],
+    "attribute_list": [
+      {
+        "attribute_id": 100053,
+        "attribute_name": "Brand",
+        "is_mandatory": false,
+        "attribute_value_list": [
+          {
+            "value_id": 0,
+            "original_value_name": "Some By Mi",
+            "value_unit": ""
+          }
+        ]
+      }
+    ],
+    "models": [
+      {
+        "model_id": 0,
+        "tier_index": [0],
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 5,
+            "total_available_stock": 145
+          }
+        },
+        "original_price": 12.00,
+        "currency": "MYR",
+        "model_sku": "SP-PMPK-090-DEFAULT"
+      }
+    ],
+    "update_time": 1704067200,
+    "item_dangerous": 0,
+    "description_type": "normal",
+    "description_info": {
+      "extended_description": {
+        "field_list": []
+      }
+    }
+  }
+}
