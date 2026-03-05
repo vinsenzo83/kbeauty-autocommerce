@@ -70,7 +70,8 @@ USER nextjs
 EXPOSE 3001
 
 # Health probe for Docker (also used by docker-compose healthcheck)
+# Use curl with -L to follow redirects (Next.js may 307 → /dashboard)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD wget -qO- http://localhost:3001 || exit 1
+  CMD curl -fsL http://localhost:3001 || exit 1
 
 CMD ["node", "server.js"]

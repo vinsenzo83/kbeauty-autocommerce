@@ -268,7 +268,7 @@ services:
     ports:
       - "127.0.0.1:3001:3001"      # ← localhost only; Nginx proxies
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3001 || exit 1"]
+      test: ["CMD-SHELL", "curl -fsL http://localhost:3001 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
