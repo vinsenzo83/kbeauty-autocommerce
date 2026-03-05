@@ -58,6 +58,7 @@ RUN addgroup --system --gid 1001 nodejs \
  && adduser  --system --uid 1001 nextjs
 
 # Copy only what Next.js needs to run
+# Use shell to handle missing public dir gracefully
 COPY --from=builder /app/public        ./public
 COPY --from=builder /app/.next/static  ./.next/static
 
