@@ -2237,3 +2237,149 @@ async def reject_discovery_v2_candidate(
         "status": candidate.status,
         "notes":  candidate.notes,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 18 – Trend Signal v2 Admin endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/trends/v2/sources",
+    tags=["sprint18"],
+    summary="List all trend sources (Sprint 18)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_trend_sources_v2(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return all registered trend sources."""
+    from sqlalchemy import select as sa_select
+    from app.models.trend_signal_v2 import TrendSource
+
+    rows = (await db.execute(sa_select(TrendSource).order_by(TrendSource.created_at))).scalars().all()
+    return {
+        "sources": [
+            {
+                "id":         str(r.id),
+                "source":     r.source,
+                "name":       r.name,
+                "is_enabled": r.is_enabled,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
+    }
+
+
+@router.get(
+    "/trends/v2/items",
+    tags=["sprint18"],
+    summary="List trend items (Amazon bestsellers etc.) (Sprint 18)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_trend_items_v2(
+    source: str | None = Query(None, description="Filter by source name (e.g. amazon)"),
+    limit: int         = Query(50,  ge=1, le=500),
+    db: AsyncSession   = Depends(get_db),
+) -> dict[str, Any]:
+    """Return paginated trend items, optionally filtered by source."""
+    from sqlalchemy import select as sa_select, desc as sa_desc
+    from app.models.trend_signal_v2 import TrendItem, TrendSource
+
+    q = sa_select(TrendItem).order_by(sa_desc(TrendItem.observed_at)).limit(limit)
+    if source:
+        src_row = (await db.execute(
+            sa_select(TrendSource).where(TrendSource.source == source).limit(1)
+        )).scalar_one_or_none()
+        if src_row:
+            q = sa_select(TrendItem).where(
+                TrendItem.source_id == src_row.id
+            ).order_by(sa_desc(TrendItem.observed_at)).limit(limit)
+        else:
+            return {"items": [], "total": 0}
+
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "items": [
+            {
+                "id":           str(r.id),
+                "source_id":    str(r.source_id),
+                "external_id":  r.external_id,
+                "title":        r.title,
+                "brand":        r.brand,
+                "category":     r.category,
+                "rank":         r.rank,
+                "price":        float(r.price) if r.price else None,
+                "rating":       float(r.rating) if r.rating else None,
+                "review_count": r.review_count,
+                "observed_at":  r.observed_at.isoformat() if r.observed_at else None,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
+    }
+
+
+@router.get(
+    "/trends/v2/mentions",
+    tags=["sprint18"],
+    summary="List TikTok mention signals (Sprint 18)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_trend_mentions_v2(
+    limit: int       = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return latest mention signals, sorted by score DESC."""
+    from sqlalchemy import select as sa_select, desc as sa_desc
+    from app.models.trend_signal_v2 import MentionSignal
+
+    rows = (await db.execute(
+        sa_select(MentionSignal)
+        .order_by(sa_desc(MentionSignal.score))
+        .limit(limit)
+    )).scalars().all()
+
+    return {
+        "mentions": [
+            {
+                "id":                   str(r.id),
+                "canonical_product_id": str(r.canonical_product_id),
+                "source_id":            str(r.source_id),
+                "mentions":             r.mentions,
+                "velocity":             float(r.velocity) if r.velocity else None,
+                "score":                float(r.score) if r.score else None,
+                "observed_at":          r.observed_at.isoformat() if r.observed_at else None,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
+    }
+
+
+@router.post(
+    "/trends/v2/run",
+    tags=["sprint18"],
+    summary="Trigger trend collection v2 (Sprint 18)",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def run_trends_v2(
+    dry_run: bool = Query(True,  description="Dry-run: collect but do not persist"),
+    limit:   int  = Query(200,   ge=1, le=1000),
+) -> dict[str, Any]:
+    """
+    Trigger the Sprint 18 trend collection Celery task.
+    By default runs as dry_run=True (safe).
+    Set dry_run=false for a live run that persists data.
+    """
+    from app.workers.tasks_trends_v2 import run_trend_collection_v2
+
+    task = run_trend_collection_v2.delay(dry_run=dry_run, limit=limit)
+    return {
+        "task_id":  task.id,
+        "dry_run":  dry_run,
+        "limit":    limit,
+        "status":   "queued",
+        "message":  "Trend collection v2 task queued",
+    }

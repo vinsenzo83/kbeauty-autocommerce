@@ -27,6 +27,7 @@ celery_app = Celery(
         "app.workers.tasks_discovery",         # Sprint 15
         "app.workers.tasks_monitoring",        # Sprint 16
         "app.workers.tasks_discovery_v2",      # Sprint 17
+        "app.workers.tasks_trends_v2",           # Sprint 18
     ],
 )
 
@@ -132,3 +133,14 @@ celery_app.conf.update(
         },
     },
 )
+
+# ── Sprint 18: Trend Signal v2 beat schedule (gated by TRENDS_ENABLED=1) ─────
+if os.getenv("TRENDS_ENABLED", "0") == "1":
+    _TRENDS_HOUR   = int(os.getenv("TRENDS_V2_DAILY_HOUR",   "2"))
+    _TRENDS_MINUTE = int(os.getenv("TRENDS_V2_DAILY_MINUTE", "30"))
+    celery_app.conf.beat_schedule["run-trend-collection-v2-daily"] = {
+        "task":    "tasks_trends_v2.run_trend_collection_v2",
+        "schedule": crontab(hour=_TRENDS_HOUR, minute=_TRENDS_MINUTE),
+        "kwargs":  {"dry_run": False},
+        "options": {"expires": 3600},
+    }

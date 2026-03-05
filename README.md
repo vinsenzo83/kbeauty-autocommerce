@@ -2356,3 +2356,159 @@ $ pytest -q -m "not integration and not slow"
 - [x] Dashboard `/dashboard/discovery` — v2 with score bars, Run/Reject buttons
 - [x] 22 mock-only tests — **total 478 passed**, 13 warnings
 - [x] CI green ✅ (Sprints 1–16 unchanged)
+
+---
+
+## Sprint 18 – Trend Signal v2: Amazon Bestseller & TikTok Mention Signals
+
+### Overview
+Sprint 18 builds a **real-time trend intelligence pipeline** that collects Amazon bestseller data and TikTok product-mention signals, stores them in dedicated tables, and feeds the scores directly into the Discovery v2 candidate scoring engine (Sprint 17).
+
+### Architecture
+
+```
+Amazon Mock/Live
+       │
+       ▼
+amazon_collector.py ──→ insert_trend_items() ──→ trend_items
+                                                        │
+tiktok_mentions_collector.py                           │
+       │                                              │
+       ▼                                              ▼
+compute_mention_signals() ◄── build_mention_dictionary()
+       │                              │
+       ▼                              ▼
+mention_signals                mention_dictionary
+       │
+       ▼
+get_latest_tiktok_scores() ──→ discovery_service_v2.score_product()
+get_latest_amazon_scores() ──┘
+```
+
+### New Score Formula (Sprint 18)
+
+```
+score = amazon_rank_score  * 0.30
+      + supplier_rank_score * 0.20
+      + margin_score        * 0.20
+      + tiktok_trend_score  * 0.20   ← new in Sprint 18
+      + review_score        * 0.10
+```
+
+Fallback: neutral 0.5 used when Amazon/TikTok data is not yet available.
+
+### New Files
+
+| File | Description |
+|------|-------------|
+| `migrations/0020_trend_signals_v2.sql` | 4 tables: trend_sources, trend_items, mention_dictionary, mention_signals |
+| `app/models/trend_signal_v2.py` | ORM models TrendSource, TrendItem, MentionDictionary, MentionSignal |
+| `app/services/trend_signal_service_v2.py` | 7 service functions |
+| `app/services/trend_collectors_v2/amazon_collector.py` | Amazon mock + live collector |
+| `app/services/trend_collectors_v2/tiktok_mentions_collector.py` | TikTok mock + live collector |
+| `fixtures/trends/amazon_bestsellers_mock.json` | Deterministic Amazon mock data |
+| `fixtures/trends/tiktok_mentions_mock.json` | Deterministic TikTok mock data |
+| `app/workers/tasks_trends_v2.py` | Celery task with Redis lock |
+| `dashboard/src/app/dashboard/trends/page.tsx` | Trends dashboard (Amazon + TikTok) |
+| `tests/test_sprint18_trends_v2.py` | 22 mock-only tests |
+
+### Modified Files
+
+- `app/services/discovery_service_v2.py` – updated score formula (0.30+0.20+0.20+0.20+0.10)
+- `app/workers/celery_app.py` – registered tasks_trends_v2; beat schedule at 02:30
+- `app/routers/admin.py` – 4 new endpoints `/admin/trends/v2/*`
+- `tests/test_sprint17_discovery.py` – updated score assertions for Sprint 18 formula
+
+### Admin API Endpoints
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| GET | `/admin/trends/v2/sources` | VIEWER | List trend sources |
+| GET | `/admin/trends/v2/items?source=amazon&limit=50` | VIEWER | Amazon bestseller items |
+| GET | `/admin/trends/v2/mentions?limit=50` | VIEWER | TikTok mention signals |
+| POST | `/admin/trends/v2/run?dry_run=true&limit=200` | OPERATOR | Trigger trend collection |
+
+### Example curl Commands
+
+```bash
+# Authenticate
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/token \
+  -d "username=admin@example.com&password=admin" | jq -r .access_token)
+
+# List trend sources
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/admin/trends/v2/sources
+
+# List Amazon bestsellers (top 20)
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/admin/trends/v2/items?source=amazon&limit=20"
+
+# List TikTok mention leaderboard
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/admin/trends/v2/mentions?limit=20"
+
+# Dry-run trend collection (safe, no DB writes)
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/admin/trends/v2/run?dry_run=true"
+
+# Live trend collection (writes to DB)
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/admin/trends/v2/run?dry_run=false&limit=200"
+```
+
+### Dashboard
+New page `/dashboard/trends` showing:
+- **Trend Sources** – registered signal sources with enabled status
+- **Amazon Bestsellers Table** – rank, title, brand, category, price, rating, reviews
+- **TikTok Mention Leaderboard** – product IDs sorted by mention score (visual bar)
+- **Run Modal** – dry-run/live execution with limit control
+
+### Celery Beat Schedule
+
+```
+TRENDS_ENABLED=1  →  daily at 02:30 KST
+                     task: run_trend_collection_v2(dry_run=False)
+                     Redis lock: trends:run (TTL 30 min)
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRENDS_ENABLED` | `0` | Enable beat schedule (1=on) |
+| `TREND_LOCK_TTL` | `1800` | Redis lock TTL seconds |
+| `TRENDS_V2_DAILY_HOUR` | `2` | Beat hour (KST) |
+| `TRENDS_V2_DAILY_MINUTE` | `30` | Beat minute |
+| `TREND_NETWORK_ENABLED` | `0` | Enable real network fetch (1=live) |
+
+### Safety Design
+- **Mock-first**: both collectors default to fixture data (`TREND_NETWORK_ENABLED=0`)
+- **Dry-run default**: admin API POST defaults to `dry_run=true`
+- **Redis lock**: prevents concurrent trend collection runs
+- **Exception isolation**: Amazon/TikTok score lookup is wrapped in try/except; uses neutral 0.5 fallback
+
+### Test Results
+
+```
+pytest -q -m "not integration and not slow" --timeout=30
+→ 434 passed, 66 deselected, 13 warnings in 14.55 s
+
+pytest -q --timeout=30
+→ 500 passed, 13 warnings in 17.51 s
+```
+
+### Definition of Done — Sprint 18 ✅
+
+- [x] `migrations/0020_trend_signals_v2.sql` – idempotent, 4 tables + indexes
+- [x] ORM models `TrendSource`, `TrendItem`, `MentionDictionary`, `MentionSignal` in `app/models/trend_signal_v2.py`
+- [x] ORM registered in `app/main.py`
+- [x] Service `trend_signal_service_v2.py` with 7 public functions
+- [x] Amazon collector with fixture fallback (`amazon_bestsellers_mock.json`)
+- [x] TikTok mentions collector with phrase-dictionary extraction + fixture fallback
+- [x] Celery task `run_trend_collection_v2` with Redis lock (TTL 30 min)
+- [x] Beat schedule at 02:30 KST, gated by `TRENDS_ENABLED=1`
+- [x] Discovery v2 updated to Sprint 18 formula (amazon×0.30 + supplier×0.20 + margin×0.20 + tiktok×0.20 + review×0.10)
+- [x] Admin API: 4 endpoints `/admin/trends/v2/*`
+- [x] Dashboard `/dashboard/trends/page.tsx` with Amazon + TikTok tables
+- [x] 22 mock-only tests in `tests/test_sprint18_trends_v2.py` – all passing
+- [x] CI green: **500 tests passed**, 13 warnings

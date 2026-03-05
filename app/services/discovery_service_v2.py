@@ -57,12 +57,14 @@ from app.models.product_candidate_v2 import ProductCandidateV2, CandidateStatusV
 
 logger = structlog.get_logger(__name__)
 
-# ── Score weights (must sum to 1.0) ──────────────────────────────────────────
-WEIGHT_AMAZON_RANK    = 0.35
-WEIGHT_SUPPLIER_RANK  = 0.25
+# ── Score weights (Sprint 18 – must sum to 1.0) ──────────────────────────────
+WEIGHT_AMAZON_RANK    = 0.30   # was 0.35 (Sprint 17)
+WEIGHT_SUPPLIER_RANK  = 0.20   # was 0.25
 WEIGHT_MARGIN         = 0.20
+WEIGHT_TIKTOK_TREND   = 0.20   # new in Sprint 18
 WEIGHT_REVIEW         = 0.10
-WEIGHT_COMPETITION    = 0.10
+# competition_score accepted for backward compat but weight redistributed to TikTok
+WEIGHT_COMPETITION    = 0.00
 
 # Neutral default for missing signals
 NEUTRAL_SCORE = 0.5
@@ -95,15 +97,15 @@ def score_product(parts: dict[str, float]) -> float:
     amazon   = float(parts.get("amazon_rank_score",   NEUTRAL_SCORE))
     supplier = float(parts.get("supplier_rank_score", NEUTRAL_SCORE))
     margin   = float(parts.get("margin_score",        NEUTRAL_SCORE))
+    tiktok   = float(parts.get("tiktok_trend_score",  NEUTRAL_SCORE))
     review   = float(parts.get("review_score",        NEUTRAL_SCORE))
-    comp     = float(parts.get("competition_score",   NEUTRAL_SCORE))
 
     raw = (
         amazon   * WEIGHT_AMAZON_RANK
         + supplier * WEIGHT_SUPPLIER_RANK
         + margin   * WEIGHT_MARGIN
+        + tiktok   * WEIGHT_TIKTOK_TREND
         + review   * WEIGHT_REVIEW
-        + comp     * WEIGHT_COMPETITION
     )
     # Clamp to [0.0, 1.0]
     return max(0.0, min(1.0, raw))
@@ -234,17 +236,29 @@ async def generate_candidates(
             except Exception:
                 pass  # Market price table may not exist in test env
 
-            # ── Amazon + review signals (neutral – no Amazon source in DB) ────
+            # ── Amazon/review/TikTok signals: try trend_signal_service_v2, else neutral ─
             amazon_rs = NEUTRAL_SCORE
             review_s  = NEUTRAL_SCORE
+            tiktok_s  = NEUTRAL_SCORE
+            try:
+                from app.services import trend_signal_service_v2 as _tsvc
+                amazon_scores = await _tsvc.get_latest_amazon_scores(session)
+                cp_id_str = str(cp.id)
+                if cp_id_str in amazon_scores:
+                    amazon_rs = float(amazon_scores[cp_id_str].get("amazon_rank_score", NEUTRAL_SCORE))
+                    review_s  = float(amazon_scores[cp_id_str].get("review_score",      NEUTRAL_SCORE))
+                tiktok_scores = await _tsvc.get_latest_tiktok_scores(session)
+                tiktok_s = float(tiktok_scores.get(cp_id_str, NEUTRAL_SCORE))
+            except Exception:
+                pass  # trend_signal tables may not exist in test env
 
-            # ── Compute final score ───────────────────────────────────────────
+            # ── Compute final score (Sprint 18 formula) ───────────────────────
             final = score_product({
                 "amazon_rank_score":   amazon_rs,
                 "supplier_rank_score": supplier_rs,
                 "margin_score":        margin_s,
+                "tiktok_trend_score":  tiktok_s,
                 "review_score":        review_s,
-                "competition_score":   comp_s,
             })
 
             # ── Upsert: find existing candidate row ───────────────────────────

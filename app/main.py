@@ -32,6 +32,8 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     from app.models.trend_product import Base as TrendProductBase       # Sprint 15
     from app.models.product_candidate import Base as ProductCandidateBase  # Sprint 15
     from app.models.alert import Base as AlertBase                      # Sprint 16
+    from app.models.product_candidate_v2 import Base as CandidateV2Base  # Sprint 17
+    from app.models.trend_signal_v2 import Base as TrendSignalV2Base      # Sprint 18
 
     async with engine.begin() as conn:
         await conn.run_sync(OrderBase.metadata.create_all)
@@ -47,6 +49,8 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
         await conn.run_sync(TrendProductBase.metadata.create_all)       # Sprint 15
         await conn.run_sync(ProductCandidateBase.metadata.create_all)   # Sprint 15
         await conn.run_sync(AlertBase.metadata.create_all)              # Sprint 16
+        await conn.run_sync(CandidateV2Base.metadata.create_all)       # Sprint 17
+        await conn.run_sync(TrendSignalV2Base.metadata.create_all)     # Sprint 18
 
     logger.info("database tables ensured")
     yield

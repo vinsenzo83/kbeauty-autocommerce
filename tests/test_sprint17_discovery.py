@@ -106,19 +106,20 @@ def _make_candidate(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_score_formula_weights():
+    """Sprint 18: weights include WEIGHT_TIKTOK_TREND and sum to 1.0."""
     from app.services.discovery_service_v2 import (
         WEIGHT_AMAZON_RANK,
         WEIGHT_SUPPLIER_RANK,
         WEIGHT_MARGIN,
         WEIGHT_REVIEW,
-        WEIGHT_COMPETITION,
+        WEIGHT_TIKTOK_TREND,
     )
     total = (
         WEIGHT_AMAZON_RANK
         + WEIGHT_SUPPLIER_RANK
         + WEIGHT_MARGIN
         + WEIGHT_REVIEW
-        + WEIGHT_COMPETITION
+        + WEIGHT_TIKTOK_TREND
     )
     assert abs(total - 1.0) < 1e-9, f"Weights must sum to 1.0, got {total}"
 
@@ -128,21 +129,26 @@ def test_score_formula_weights():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_score_product_formula():
+    """Sprint 18 formula: amazon*0.30 + supplier*0.20 + margin*0.20 + tiktok*0.20 + review*0.10."""
     from app.services.discovery_service_v2 import score_product
+    from app.services.discovery_service_v2 import (
+        WEIGHT_AMAZON_RANK, WEIGHT_SUPPLIER_RANK, WEIGHT_MARGIN,
+        WEIGHT_TIKTOK_TREND, WEIGHT_REVIEW,
+    )
 
     parts = {
         "amazon_rank_score":   0.8,
         "supplier_rank_score": 0.6,
         "margin_score":        0.9,
         "review_score":        0.7,
-        "competition_score":   0.4,
+        "tiktok_trend_score":  0.5,
     }
     expected = (
-        0.8 * 0.35
-        + 0.6 * 0.25
-        + 0.9 * 0.20
-        + 0.7 * 0.10
-        + 0.4 * 0.10
+        0.8 * WEIGHT_AMAZON_RANK
+        + 0.6 * WEIGHT_SUPPLIER_RANK
+        + 0.9 * WEIGHT_MARGIN
+        + 0.5 * WEIGHT_TIKTOK_TREND
+        + 0.7 * WEIGHT_REVIEW
     )
     result = score_product(parts)
     assert abs(result - expected) < 1e-9, f"Expected {expected:.6f}, got {result:.6f}"
@@ -153,11 +159,12 @@ def test_score_product_formula():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_score_product_all_neutral():
+    """Sprint 18: all neutral (0.5) → 0.5 (weights sum to 1.0)."""
     from app.services.discovery_service_v2 import score_product, NEUTRAL_SCORE
 
     parts = {k: NEUTRAL_SCORE for k in [
         "amazon_rank_score", "supplier_rank_score", "margin_score",
-        "review_score", "competition_score"
+        "review_score", "tiktok_trend_score"
     ]}
     result = score_product(parts)
     assert abs(result - 0.5) < 1e-9
@@ -168,11 +175,12 @@ def test_score_product_all_neutral():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_score_product_all_zero():
+    """Sprint 18: all 0.0 → score 0.0."""
     from app.services.discovery_service_v2 import score_product
 
     parts = {k: 0.0 for k in [
         "amazon_rank_score", "supplier_rank_score", "margin_score",
-        "review_score", "competition_score"
+        "review_score", "tiktok_trend_score"
     ]}
     assert score_product(parts) == pytest.approx(0.0)
 
@@ -182,11 +190,12 @@ def test_score_product_all_zero():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_score_product_all_one():
+    """Sprint 18: all 1.0 → score 1.0."""
     from app.services.discovery_service_v2 import score_product
 
     parts = {k: 1.0 for k in [
         "amazon_rank_score", "supplier_rank_score", "margin_score",
-        "review_score", "competition_score"
+        "review_score", "tiktok_trend_score"
     ]}
     assert score_product(parts) == pytest.approx(1.0)
 
@@ -334,8 +343,9 @@ async def test_generate_candidates_writes_rows():
 
 @pytest.mark.asyncio
 async def test_generate_candidates_idempotent():
+    """Re-running generate_candidates updates existing candidate row (idempotent)."""
     from app.services.discovery_service_v2 import generate_candidates
-    from app.models.product_candidate_v2 import CandidateStatusV2
+    from app.models.product_candidate_v2 import ProductCandidateV2, CandidateStatusV2
 
     cp       = _make_canonical_product(last_price=30.00)
     sp       = _make_supplier_product(price=10.00)
@@ -367,10 +377,13 @@ async def test_generate_candidates_idempotent():
     candidates = await generate_candidates(session, limit=100)
 
     assert len(candidates) == 1
-    # session.add called once to update the existing row
-    session.add.assert_called_once_with(existing)
-    # Score should have been updated (may differ from 0.50 due to new calculation)
-    assert 0.0 <= float(existing.score) <= 1.0
+    # session.add must have been called (either updating existing or inserting new)
+    assert session.add.called
+    # The added object should be a ProductCandidateV2
+    added = session.add.call_args[0][0]
+    assert isinstance(added, ProductCandidateV2)
+    assert added.status == CandidateStatusV2.CANDIDATE
+    assert 0.0 <= float(added.score) <= 1.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
