@@ -1,0 +1,74 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: kbeauty
+          POSTGRES_PASSWORD: kbeauty
+          POSTGRES_DB: kbeauty_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U kbeauty -d kbeauty_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL_TEST: postgresql+psycopg://kbeauty:kbeauty@localhost:5432/kbeauty_test
+      REDIS_URL: redis://localhost:6379/0
+      SHOPIFY_WEBHOOK_SECRET: test_secret
+      STORAGE_PATH: ./storage
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Apply SQL migrations
+        run: |
+          python - << 'PY'
+          import glob, os
+          from sqlalchemy import create_engine, text
+          url = os.environ["DATABASE_URL_TEST"]
+          engine = create_engine(url, pool_pre_ping=True)
+          files = sorted(glob.glob("migrations/*.sql"))
+          with engine.begin() as conn:
+              for f in files:
+                  sql = open(f).read()
+                  if sql.strip():
+                      conn.execute(text(sql))
+          print("Applied migrations:", files)
+          PY
+
+      - name: Run tests
+        run: |
+          pytest -q --tb=short
