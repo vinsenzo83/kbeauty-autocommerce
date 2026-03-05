@@ -180,6 +180,141 @@ class ShopifyProductService:
         )
         return new_shopify_id
 
+    # ── Sprint 6: Inventory sync methods ─────────────────────────────────────
+
+    async def _get_variant_id(self, product: Any) -> str | None:
+        """
+        Return the first variant ID for a Shopify product.
+
+        Checks ``product.shopify_variant_id`` first (cached); otherwise
+        fetches from Shopify and returns the first variant ID.
+        """
+        if hasattr(product, "shopify_variant_id") and product.shopify_variant_id:
+            return str(product.shopify_variant_id)
+
+        shopify_id = (
+            product.get("shopify_product_id")
+            if isinstance(product, dict)
+            else getattr(product, "shopify_product_id", None)
+        )
+        if not shopify_id:
+            return None
+
+        result = await self._client._get(f"/products/{shopify_id}.json")  # type: ignore[protected-access]
+        variants = result.get("product", {}).get("variants", [])
+        if not variants:
+            return None
+        return str(variants[0]["id"])
+
+    async def set_inventory_zero(self, product: Any) -> bool:
+        """
+        Set Shopify inventory to 0 for an out-of-stock product.
+
+        Updates the variant's ``inventory_policy`` to ``"deny"`` via
+        PUT /variants/{variant_id}.json — prevents new orders even when
+        location-based inventory API is unavailable.
+
+        Returns
+        -------
+        True if the call succeeded (or was a no-op stub), False on error.
+        """
+        shopify_id = (
+            product.get("shopify_product_id")
+            if isinstance(product, dict)
+            else getattr(product, "shopify_product_id", None)
+        )
+        if not shopify_id:
+            logger.debug("shopify_product_service.set_inventory_zero.no_shopify_id")
+            return False
+
+        name = (
+            product.get("name", "")
+            if isinstance(product, dict)
+            else getattr(product, "name", "")
+        )
+        log = logger.bind(shopify_product_id=shopify_id, name=name)
+        log.info("shopify_product_service.set_inventory_zero")
+
+        variant_id = await self._get_variant_id(product)
+        if not variant_id:
+            log.warning("shopify_product_service.set_inventory_zero.no_variant")
+            return False
+
+        result = await self._client._put(  # type: ignore[protected-access]
+            f"/variants/{variant_id}.json",
+            {
+                "variant": {
+                    "id":               variant_id,
+                    "inventory_policy": "deny",
+                }
+            },
+        )
+
+        ok = bool(result) and "variant" in result
+        log.info(
+            "shopify_product_service.set_inventory_zero.done",
+            ok=ok,
+            variant_id=variant_id,
+        )
+        return ok
+
+    async def update_variant_price(self, product: Any, new_price: float) -> bool:
+        """
+        Update the price of the first variant of a Shopify product.
+
+        Parameters
+        ----------
+        product   : ORM Product or dict with ``shopify_product_id``.
+        new_price : New price as float.
+
+        Returns
+        -------
+        True if the update succeeded or was a stub no-op, False on error.
+        """
+        shopify_id = (
+            product.get("shopify_product_id")
+            if isinstance(product, dict)
+            else getattr(product, "shopify_product_id", None)
+        )
+        if not shopify_id:
+            logger.debug("shopify_product_service.update_variant_price.no_shopify_id")
+            return False
+
+        name = (
+            product.get("name", "")
+            if isinstance(product, dict)
+            else getattr(product, "name", "")
+        )
+        log = logger.bind(
+            shopify_product_id=shopify_id,
+            name=name,
+            new_price=new_price,
+        )
+        log.info("shopify_product_service.update_variant_price")
+
+        variant_id = await self._get_variant_id(product)
+        if not variant_id:
+            log.warning("shopify_product_service.update_variant_price.no_variant")
+            return False
+
+        result = await self._client._put(  # type: ignore[protected-access]
+            f"/variants/{variant_id}.json",
+            {
+                "variant": {
+                    "id":    variant_id,
+                    "price": f"{new_price:.2f}",
+                }
+            },
+        )
+
+        ok = bool(result) and "variant" in result
+        log.info(
+            "shopify_product_service.update_variant_price.done",
+            ok=ok,
+            variant_id=variant_id,
+        )
+        return ok
+
 
 def get_shopify_product_service(
     client: ShopifyClient | None = None,

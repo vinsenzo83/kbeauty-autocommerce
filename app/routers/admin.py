@@ -543,6 +543,78 @@ async def get_artifact(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# INVENTORY (Sprint 6)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/inventory/stale",
+    tags=["inventory"],
+    summary="Products not checked in the last 24 h (stale inventory)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_stale_inventory(
+    hours: int = Query(24, ge=1, le=168, description="Staleness threshold in hours"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Return products whose ``last_checked_at`` is older than ``hours`` hours
+    (or NULL — never checked).
+
+    Response
+    --------
+    {
+        "stale_count": int,
+        "items": [
+            {
+                "id": str,
+                "name": str,
+                "supplier_product_id": str,
+                "supplier_product_url": str,
+                "stock_status": str,
+                "last_checked_at": str | null,
+                "last_seen_price": float | null,
+                "shopify_product_id": str | null,
+            },
+            ...
+        ]
+    }
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import or_, select
+
+    from app.models.product import Product
+
+    threshold = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    result = await db.execute(
+        select(Product).where(
+            or_(
+                Product.last_checked_at.is_(None),  # type: ignore[attr-defined]
+                Product.last_checked_at < threshold,  # type: ignore[operator]
+            )
+        ).order_by(Product.last_checked_at.asc().nullsfirst())  # type: ignore[attr-defined]
+    )
+    products = result.scalars().all()
+
+    items = [
+        {
+            "id":                   str(p.id),
+            "name":                 p.name,
+            "supplier_product_id":  p.supplier_product_id,
+            "supplier_product_url": p.supplier_product_url,
+            "stock_status":         p.stock_status,
+            "last_checked_at":      p.last_checked_at.isoformat() if p.last_checked_at else None,
+            "last_seen_price":      float(p.last_seen_price) if p.last_seen_price is not None else None,
+            "shopify_product_id":   p.shopify_product_id,
+        }
+        for p in products
+    ]
+
+    return {"stale_count": len(items), "items": items}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 

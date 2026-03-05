@@ -16,7 +16,8 @@ celery_app = Celery(
     include=[
         "app.workers.tasks_order",
         "app.workers.tasks_tracking",
-        "app.workers.tasks_products",   # Sprint 4
+        "app.workers.tasks_products",    # Sprint 4
+        "app.workers.tasks_inventory",   # Sprint 6
     ],
 )
 
@@ -24,6 +25,7 @@ celery_app = Celery(
 _POLL_INTERVAL          = int(os.getenv("TRACKING_POLL_INTERVAL",  "600"))   # 10 min
 _CRAWL_INTERVAL         = int(os.getenv("PRODUCT_CRAWL_INTERVAL",  "43200")) # 12 h
 _SHOPIFY_SYNC_INTERVAL  = int(os.getenv("PRODUCT_SYNC_INTERVAL",   "1800"))  # 30 min
+_INVENTORY_SYNC_INTERVAL= int(os.getenv("INVENTORY_SYNC_INTERVAL", "1800"))  # 30 min
 
 celery_app.conf.update(
     # Serialisation
@@ -63,6 +65,13 @@ celery_app.conf.update(
             "task":     "workers.tasks_products.sync_products_to_shopify",
             "schedule": _SHOPIFY_SYNC_INTERVAL,
             "options":  {"expires": _SHOPIFY_SYNC_INTERVAL},
+        },
+
+        # Sprint 6: Inventory sync every 30 min
+        "sync-inventory-every-30m": {
+            "task":     "workers.tasks_inventory.sync_inventory",
+            "schedule": _INVENTORY_SYNC_INTERVAL,
+            "options":  {"expires": _INVENTORY_SYNC_INTERVAL},
         },
     },
 )

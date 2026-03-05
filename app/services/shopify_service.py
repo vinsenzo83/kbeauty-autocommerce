@@ -41,6 +41,64 @@ class ShopifyClient:
             "Content-Type":           "application/json",
         }
 
+    async def _get(self, path: str) -> dict[str, Any]:
+        """
+        GET from the Shopify Admin API.
+
+        Returns parsed JSON response dict.
+        Stub: when credentials are absent, returns {}.
+        """
+        if not self.store_domain or not self.api_secret:
+            logger.debug(
+                "shopify_client.stub_call",
+                method="GET",
+                path=path,
+                note="No credentials configured — stub response returned.",
+            )
+            return {}
+
+        try:
+            import httpx  # type: ignore[import]
+        except ImportError:
+            logger.warning(
+                "shopify_client.httpx_missing",
+                note="httpx not installed. Returning stub response.",
+            )
+            return {}
+
+        url = f"{self._base_url()}{path}"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, headers=self._headers())
+            resp.raise_for_status()
+            return resp.json()
+
+    async def _put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """
+        PUT to the Shopify Admin API.
+
+        Returns parsed JSON response dict.
+        Stub: when credentials are absent, returns {}.
+        """
+        if not self.store_domain or not self.api_secret:
+            logger.debug(
+                "shopify_client.stub_call",
+                method="PUT",
+                path=path,
+                note="No credentials configured — stub response returned.",
+            )
+            return {}
+
+        try:
+            import httpx  # type: ignore[import]
+        except ImportError:
+            return {}
+
+        url = f"{self._base_url()}{path}"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.put(url, headers=self._headers(), content=json.dumps(body))
+            resp.raise_for_status()
+            return resp.json()
+
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         """
         POST to the Shopify Admin API.
