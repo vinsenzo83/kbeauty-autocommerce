@@ -35,18 +35,6 @@ CREATE INDEX IF NOT EXISTS idx_canonical_products_canonical_sku
 CREATE INDEX IF NOT EXISTS idx_canonical_products_brand
     ON canonical_products (brand);
 
--- Auto-update updated_at
-DO $$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_trigger
-        WHERE tgname = 'update_canonical_products_updated_at'
-    ) THEN
-        CREATE TRIGGER update_canonical_products_updated_at
-            BEFORE UPDATE ON canonical_products
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-    END IF;
-END $$;
-
 -- ────────────────────────────────────────────────────────────
 -- 2. shopify_mappings
 -- ────────────────────────────────────────────────────────────
