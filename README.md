@@ -2512,3 +2512,153 @@ pytest -q --timeout=30
 - [x] Dashboard `/dashboard/trends/page.tsx` with Amazon + TikTok tables
 - [x] 22 mock-only tests in `tests/test_sprint18_trends_v2.py` – all passing
 - [x] CI green: **500 tests passed**, 13 warnings
+
+---
+
+## Sprint 18 – Trend Signal v2 (Amazon + TikTok Signal Collection)
+
+### Overview
+
+Amazon 베스트셀러 데이터와 TikTok 제품 언급 신호를 수집하여 Discovery v2 스코어링에 활용합니다.
+
+| 구성 요소 | 설명 |
+|-----------|------|
+| **DB Migration** | `migrations/0020_trend_signals_v2.sql` — 4개 테이블 (trend_sources, trend_items, mention_dictionary, mention_signals) |
+| **ORM Models** | `app/models/trend_signal_v2.py` — TrendSource, TrendItem, MentionDictionary, MentionSignal |
+| **Service** | `app/services/trend_signal_service_v2.py` — 7개 공개 함수 |
+| **Collectors** | `app/services/trend_collectors_v2/` — amazon_collector.py, tiktok_mentions_collector.py (mock-first) |
+| **Celery Task** | `app/workers/tasks_trends_v2.py` — run_trend_collection_v2(), Redis lock "trends:run" |
+| **Beat Schedule** | 매일 02:30 KST, `TRENDS_ENABLED=1` 환경변수로 활성화 |
+| **Discovery v2 통합** | `app/services/discovery_service_v2.py` — Sprint 18 공식 적용 |
+| **Admin API** | 4개 엔드포인트 (`/admin/trends/v2/*`) |
+| **Dashboard** | `dashboard/src/app/dashboard/trends/page.tsx` |
+| **Tests** | `tests/test_sprint18_trends_v2.py` — 22개 mock-only 테스트 |
+
+### Score Formula (Sprint 18 업데이트)
+
+```
+score = amazon_rank_score   × 0.30
+      + supplier_rank_score × 0.20
+      + margin_score        × 0.20
+      + tiktok_trend_score  × 0.20   ← NEW (Sprint 18)
+      + review_score        × 0.10
+```
+
+> Sprint 17 대비 변경: amazon 0.35→0.30, supplier 0.25→0.20, tiktok 신호 0.20 추가 (합계 = 1.0)
+
+### New Files
+
+| 파일 | 설명 |
+|------|------|
+| `migrations/0020_trend_signals_v2.sql` | 4개 테이블 + 인덱스 (idempotent) |
+| `app/models/trend_signal_v2.py` | ORM 모델 4종 |
+| `app/services/trend_signal_service_v2.py` | 핵심 서비스 로직 (upsert/insert/extract/compute/get_scores) |
+| `app/services/trend_collectors_v2/amazon_collector.py` | Amazon mock 수집기 + fetch() alias |
+| `app/services/trend_collectors_v2/tiktok_mentions_collector.py` | TikTok mock 수집기 + fetch() alias |
+| `app/workers/tasks_trends_v2.py` | Celery 태스크 (Redis lock, dry-run 지원) |
+| `dashboard/src/app/dashboard/trends/page.tsx` | Trends 대시보드 페이지 |
+| `tests/test_sprint18_trends_v2.py` | 22개 mock-only 테스트 |
+
+### Modified Files
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `app/models/trend_signal_v2.py` | Sprint 18 ORM 신규 |
+| `app/main.py` | TrendSignalV2Base 등록 |
+| `app/services/discovery_service_v2.py` | Sprint 18 가중치 공식 + TikTok 점수 통합 |
+| `app/workers/celery_app.py` | tasks_trends_v2 등록 + TRENDS_ENABLED beat schedule |
+| `app/routers/admin.py` | 4개 sprint18 엔드포인트 추가 |
+
+### Mock Fixtures
+
+```
+fixtures/trends/amazon_bestsellers_mock.json   – Amazon 베스트셀러 mock 데이터
+fixtures/trends/tiktok_mentions_mock.json      – TikTok 언급 mock 데이터
+```
+
+`TREND_NETWORK_ENABLED=0` (기본값): 항상 fixture 사용 (네트워크 없음)  
+`TREND_NETWORK_ENABLED=1`: 실제 네트워크 시도 → 실패 시 mock fallback
+
+### Admin API (v2)
+
+| 메서드 | 경로 | 역할 | 설명 |
+|--------|------|------|------|
+| GET | `/admin/trends/v2/sources` | VIEWER | 트렌드 소스 목록 |
+| GET | `/admin/trends/v2/items?source=amazon&limit=50` | VIEWER | Amazon 베스트셀러 아이템 |
+| GET | `/admin/trends/v2/mentions?limit=50` | VIEWER | TikTok 언급 신호 |
+| POST | `/admin/trends/v2/run?dry_run=true&limit=200` | OPERATOR | 트렌드 수집 트리거 |
+
+### Example curl Commands
+
+```bash
+# 1. 인증 토큰 획득
+TOKEN=$(curl -s -X POST http://localhost:8000/admin/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"admin"}' \
+  | jq -r .access_token)
+
+# 2. 트렌드 소스 목록
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/admin/trends/v2/sources
+
+# 3. Amazon 베스트셀러 아이템 조회
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/admin/trends/v2/items?source=amazon&limit=20"
+
+# 4. TikTok 언급 신호 조회
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/admin/trends/v2/mentions?limit=20"
+
+# 5. Dry-run 수집 (기본값: 안전)
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/admin/trends/v2/run?dry_run=true"
+
+# 6. Live 수집 (DB 저장)
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/admin/trends/v2/run?dry_run=false&limit=200"
+```
+
+### Configuration
+
+| 환경 변수 | 기본값 | 설명 |
+|-----------|--------|------|
+| `TRENDS_ENABLED` | `0` | `1`로 설정 시 daily beat schedule 활성화 |
+| `TREND_LOCK_TTL` | `1800` | Redis lock TTL (초), 기본 30분 |
+| `TRENDS_V2_DAILY_HOUR` | `2` | Beat 스케줄 시 (KST 02:30) |
+| `TRENDS_V2_DAILY_MINUTE` | `30` | Beat 스케줄 분 |
+| `TREND_NETWORK_ENABLED` | `0` | `1`로 설정 시 실제 네트워크 수집 시도 |
+
+### Safety Design
+
+- **dry_run=True 기본값**: POST /trends/v2/run은 기본적으로 dry-run (데이터 저장 없음)
+- **Redis lock**: "trends:run" 키로 동시 실행 방지 (TTL 30분)
+- **Mock-first**: 네트워크 없이 fixture로 동작 (테스트/개발 안전)
+- **Idempotent DB**: `INSERT OR IGNORE`, `ON CONFLICT DO NOTHING` 패턴 사용
+
+### Test Results
+
+```
+pytest -q -m "not integration and not slow"
+→ 434 passed, 66 deselected, 13 warnings in 14.55 s
+
+pytest -q (all tests including sprint18)
+→ 500 passed, 13 warnings in 17.51 s
+```
+
+### Definition of Done — Sprint 18 ✅
+
+- [x] `migrations/0020_trend_signals_v2.sql` — 4개 테이블, idempotent
+- [x] ORM 모델 4종 (`TrendSource`, `TrendItem`, `MentionDictionary`, `MentionSignal`)
+- [x] `app/main.py` — TrendSignalV2Base 등록
+- [x] `trend_signal_service_v2.py` — 7개 공개 함수 구현
+- [x] Amazon collector (mock + fetch alias)
+- [x] TikTok mentions collector (mock + fetch alias)
+- [x] Fixtures: `amazon_bestsellers_mock.json`, `tiktok_mentions_mock.json`
+- [x] `tasks_trends_v2.py` — Celery 태스크, Redis lock, dry-run
+- [x] `celery_app.py` — tasks_trends_v2 등록, TRENDS_ENABLED beat schedule (02:30)
+- [x] `discovery_service_v2.py` — Sprint 18 공식 (tiktok 0.20 포함), TikTok/Amazon 점수 통합
+- [x] Admin API 4개 엔드포인트 (`/admin/trends/v2/*`)
+- [x] Dashboard `/dashboard/trends/page.tsx`
+- [x] 테스트 22개 mock-only, all passed
+- [x] Sprint 17 테스트 호환성 유지 (formula 변경 반영)
+- [x] CI green: 500 passed, 13 warnings in 17.51 s
