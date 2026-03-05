@@ -36,6 +36,7 @@ from app.services.dashboard_service import (
     compute_alerts,
     compute_health,
     compute_kpi,
+    compute_metrics,
     get_orders_chart,
 )
 from app.services.order_service import (
@@ -477,6 +478,22 @@ def _ticket_summary(t: Any, full: bool = False) -> dict[str, Any]:
         d["payload"] = t.payload
         d["note"]    = t.note
     return d
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HEALTH
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/metrics",
+    tags=["metrics"],
+    summary="Order count metrics: today / pending / processing / failed",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def admin_metrics(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    return await compute_metrics(db)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

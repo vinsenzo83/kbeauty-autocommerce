@@ -219,3 +219,18 @@ export interface HealthResponse {
 export async function getHealth(): Promise<HealthResponse> {
   return apiFetch("/admin/health");
 }
+
+// ── Metrics ───────────────────────────────────────────────────────────────────
+export interface MetricsResponse {
+  orders_today: number;
+  pending:      number;
+  processing:   number;
+  failed:       number;
+  shipped:      number;
+  canceled:     number;
+  total:        number;
+}
+
+export async function getMetrics(): Promise<MetricsResponse> {
+  return apiFetch("/admin/metrics");
+}

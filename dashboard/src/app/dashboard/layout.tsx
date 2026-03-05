@@ -7,6 +7,7 @@ import clsx from "clsx";
 const NAV = [
   { href: "/dashboard",          label: "Overview"  },
   { href: "/dashboard/orders",   label: "Orders"    },
+  { href: "/dashboard/metrics",  label: "Metrics"   },
   { href: "/dashboard/tickets",  label: "Tickets"   },
   { href: "/dashboard/health",   label: "Health"    },
 ];

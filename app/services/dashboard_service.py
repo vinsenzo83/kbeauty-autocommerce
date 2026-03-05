@@ -310,3 +310,57 @@ async def compute_health(
         "queue_depth": queue_depth,
         "recent_failures_24h": failures,
     }
+
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+
+async def compute_metrics(session: AsyncSession) -> dict[str, Any]:
+    """
+    Compute order count metrics for the Metrics dashboard page.
+
+    Returns
+    -------
+    dict with keys:
+        orders_today   int  — all orders created today (Seoul day boundary)
+        pending        int  — RECEIVED + VALIDATED + PLACING
+        processing     int  — PLACED (supplier confirmed, awaiting tracking)
+        failed         int  — FAILED (all time)
+        shipped        int  — SHIPPED (all time)
+        canceled       int  — CANCELED (all time)
+        total          int  — total orders in DB
+    """
+    day_start, day_end = _seoul_day_bounds()
+
+    # orders today
+    r = await session.execute(
+        select(func.count(Order.id)).where(
+            Order.created_at >= day_start,
+            Order.created_at <  day_end,
+        )
+    )
+    orders_today: int = r.scalar_one() or 0
+
+    # per-status counts (all time)
+    status_rows = await session.execute(
+        select(Order.status, func.count(Order.id)).group_by(Order.status)
+    )
+    counts: dict[str, int] = {row[0].value: row[1] for row in status_rows.fetchall()}
+
+    pending    = (counts.get("RECEIVED",  0)
+                + counts.get("VALIDATED", 0)
+                + counts.get("PLACING",   0))
+    processing = counts.get("PLACED",   0)
+    failed     = counts.get("FAILED",   0)
+    shipped    = counts.get("SHIPPED",  0)
+    canceled   = counts.get("CANCELED", 0)
+    total      = sum(counts.values())
+
+    return {
+        "orders_today": orders_today,
+        "pending":      pending,
+        "processing":   processing,
+        "failed":       failed,
+        "shipped":      shipped,
+        "canceled":     canceled,
+        "total":        total,
+    }

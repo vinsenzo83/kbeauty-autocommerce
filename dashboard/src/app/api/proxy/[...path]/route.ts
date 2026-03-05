@@ -2,52 +2,34 @@ import { NextRequest, NextResponse } from "next/server";
 
 const API_URL = process.env.API_URL ?? "http://api:8000";
 
-export async function GET(
-  req: NextRequest,
-  { params }: { params: { path: string[] } }
-) {
-  return proxyRequest(req, params.path, "GET");
+type RouteContext = { params: Promise<{ path: string[] }> };
+
+export async function GET(req: NextRequest, ctx: RouteContext) {
+  return proxy(req, await ctx.params, "GET");
+}
+export async function POST(req: NextRequest, ctx: RouteContext) {
+  return proxy(req, await ctx.params, "POST");
+}
+export async function PUT(req: NextRequest, ctx: RouteContext) {
+  return proxy(req, await ctx.params, "PUT");
+}
+export async function DELETE(req: NextRequest, ctx: RouteContext) {
+  return proxy(req, await ctx.params, "DELETE");
 }
 
-export async function POST(
+async function proxy(
   req: NextRequest,
-  { params }: { params: { path: string[] } }
-) {
-  return proxyRequest(req, params.path, "POST");
-}
-
-export async function PUT(
-  req: NextRequest,
-  { params }: { params: { path: string[] } }
-) {
-  return proxyRequest(req, params.path, "PUT");
-}
-
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: { path: string[] } }
-) {
-  return proxyRequest(req, params.path, "DELETE");
-}
-
-async function proxyRequest(
-  req: NextRequest,
-  pathSegments: string[],
-  method: string
+  params: { path: string[] },
+  method: string,
 ): Promise<NextResponse> {
   try {
-    const path = "/" + pathSegments.join("/");
+    const path   = "/" + params.path.join("/");
     const search = req.nextUrl.search ?? "";
-    const url = `${API_URL}${path}${search}`;
+    const url    = `${API_URL}${path}${search}`;
 
-    // Forward Authorization header from the original request
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    const authHeader = req.headers.get("authorization");
-    if (authHeader) {
-      headers["Authorization"] = authHeader;
-    }
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const auth = req.headers.get("authorization");
+    if (auth) headers["Authorization"] = auth;
 
     const init: RequestInit = { method, headers };
     if (method !== "GET" && method !== "DELETE") {
@@ -55,18 +37,16 @@ async function proxyRequest(
       if (body) init.body = body;
     }
 
-    const upstream = await fetch(url, init);
-    const contentType = upstream.headers.get("content-type") ?? "";
-    const text = await upstream.text();
+    const upstream    = await fetch(url, init);
+    const contentType = upstream.headers.get("content-type") ?? "application/json";
+    const text        = await upstream.text();
 
     return new NextResponse(text, {
       status: upstream.status,
-      headers: {
-        "Content-Type": contentType || "application/json",
-      },
+      headers: { "Content-Type": contentType },
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Unknown proxy error";
+    const msg = err instanceof Error ? err.message : "Proxy error";
     return NextResponse.json({ detail: msg }, { status: 502 });
   }
 }
