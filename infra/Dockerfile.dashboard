@@ -3,14 +3,14 @@
 # Next.js Admin Dashboard – Production Multi-Stage Build
 # =============================================================================
 #
-# Stage 1 (deps)    – Install production Node.js dependencies
-# Stage 2 (builder) – Build the Next.js application
-# Stage 3 (runner)  – Minimal runtime image
+# Stage 1 (deps)    – Install ALL dependencies (incl. devDeps for build)
+# Stage 2 (builder) – Build the Next.js standalone application
+# Stage 3 (runner)  – Minimal runtime image (no devDeps)
 #
 # Result: slim image (~180 MB) with no dev dependencies.
 # =============================================================================
 
-# ── Stage 1: Install dependencies ─────────────────────────────────────────────
+# ── Stage 1: Install ALL dependencies (needed for next build) ─────────────────
 FROM node:20-alpine AS deps
 
 WORKDIR /app
@@ -21,7 +21,9 @@ RUN apk add --no-cache libc6-compat
 # Copy package manifests only (cache-friendly layer)
 COPY dashboard/package.json dashboard/package-lock.json* ./
 
-RUN npm ci --omit=dev --legacy-peer-deps
+# Install ALL deps (including devDeps) – required for `next build`
+# --legacy-peer-deps: React 19 + older Radix UI components peer conflict
+RUN npm ci --legacy-peer-deps
 
 
 # ── Stage 2: Build ────────────────────────────────────────────────────────────
@@ -38,7 +40,7 @@ COPY dashboard/ .
 # Disable Next.js telemetry in CI/CD
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Build for production (output: standalone)
+# Build for production (output: standalone – set in next.config.ts)
 RUN npm run build
 
 
