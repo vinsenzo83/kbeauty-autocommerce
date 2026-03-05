@@ -173,6 +173,7 @@ class MentionSignal(Base):
     source_id            = Column(UUID(as_uuid=True), nullable=False, index=True)
     observed_at          = Column(DateTime(timezone=True), server_default=func.now(),
                                   nullable=False)
+    observed_date        = Column(String(10), nullable=False, default="")  # YYYY-MM-DD for daily-unique index
     mentions             = Column(Integer, nullable=False, default=0)
     velocity             = Column(Float, nullable=False, default=0.0)
     score                = Column(Float, nullable=False, default=0.0)

@@ -371,6 +371,7 @@ async def compute_mention_signals(
                 canonical_product_id = cp_uuid,
                 source_id            = source_id,
                 observed_at          = observed_at,
+                observed_date        = observed_at.strftime("%Y-%m-%d"),
                 mentions             = mention_count,
                 velocity             = velocity,
                 score                = score,
