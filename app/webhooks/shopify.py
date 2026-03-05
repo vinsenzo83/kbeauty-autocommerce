@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
+from app.config import get_settings, Settings
 from app.db.session import get_db
 from app.models.event_log import EventLog
 from app.models.order import Order
@@ -40,8 +40,8 @@ async def order_created_webhook(
     x_shopify_hmac_sha256: str = Header(..., alias="X-Shopify-Hmac-Sha256"),
     x_shopify_topic: str = Header(default="orders/create", alias="X-Shopify-Topic"),
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    settings = get_settings()
     raw_body = await request.body()
 
     # ── 1. Verify HMAC ────────────────────────────────────────────────────────
