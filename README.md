@@ -2048,7 +2048,7 @@ All component scores are normalised to **[0.0, 1.0]**.
 | `app/services/discovery_service.py` | Pipeline orchestrator + `get_top_candidates()` |
 | `app/workers/tasks_discovery.py` | Celery task + Redis lock + daily beat |
 | `dashboard/src/app/dashboard/discovery/page.tsx` | Discovery dashboard UI |
-| `tests/test_sprint15_discovery.py` | 22 mock-only tests |
+| `tests/test_sprint15_discovery.py` | 16 mock-only tests |
 
 ### Admin API Endpoints
 
@@ -2123,7 +2123,7 @@ run_discovery_pipeline.apply_async(kwargs={"dry_run": False, "top_n": 50})
 ### make test-fast Output
 ```
 $ pytest -q -m "not integration and not slow" --timeout=30
-380 passed, 66 deselected, 10 warnings in 13.46s
+374 passed, 66 deselected, 11 warnings in 14.00s
 ```
 
 ### Definition of Done — Sprint 15
@@ -2138,5 +2138,5 @@ $ pytest -q -m "not integration and not slow" --timeout=30
 - [x] `tasks_discovery.py` — Celery task + Redis lock + beat schedule
 - [x] 4 admin API endpoints (`/admin/discovery/*`)
 - [x] Dashboard `/dashboard/discovery` — table + Run + Publish buttons
-- [x] 22 mock-only tests — **total 380 passed**, 66 deselected
+- [x] 16 mock-only tests — **total 374 passed**, 66 deselected, 11 warnings
 - [x] CI green ✅
