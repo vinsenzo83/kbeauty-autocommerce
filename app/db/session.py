@@ -65,6 +65,17 @@ class _EngineProxy:
 engine = _EngineProxy()
 
 
+def AsyncSessionLocal() -> AsyncSession:  # type: ignore[return-value]
+    """Backward-compatible factory used by Celery tasks (tasks_tracking.py).
+
+    Usage::
+
+        async with AsyncSessionLocal() as session:
+            ...
+    """
+    return _get_session_factory()()
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:  # type: ignore[return]
     factory = _get_session_factory()
     async with factory() as session:
