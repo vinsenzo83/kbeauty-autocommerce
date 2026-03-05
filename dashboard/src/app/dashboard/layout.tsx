@@ -13,6 +13,7 @@ const NAV = [
   { href: "/dashboard/publish",   label: "🚀 Publish" },  // Sprint 12
   { href: "/dashboard/repricing", label: "💰 Repricing" }, // Sprint 13
   { href: "/dashboard/discovery", label: "🔭 Discovery" }, // Sprint 15
+  { href: "/dashboard/ops",       label: "⚙️ Ops" },       // Sprint 16
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

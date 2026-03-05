@@ -1964,3 +1964,168 @@ async def publish_discovery_candidate(
         "published_count":     result.published_count,
         "candidate_status":    candidate_row.status if not dry_run else "candidate",
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Sprint 16 – Operational Observability Admin API
+# ═════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/ops/kpis",
+    tags=["sprint16"],
+    summary="Collect and return current operational KPI snapshot",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_ops_kpis(
+    window_minutes: int = Query(60, ge=5, le=1440, description="Lookback window in minutes"),
+    db: AsyncSession    = Depends(get_db),
+) -> dict[str, Any]:
+    from app.services.metrics_service import collect_kpis
+    snapshot = await collect_kpis(db, window_minutes=window_minutes)
+    return snapshot.to_dict()
+
+
+@router.get(
+    "/ops/alerts",
+    tags=["sprint16"],
+    summary="List open and acknowledged alert events",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_ops_alerts(
+    status:   str | None = Query(None,  description="Filter: open|acknowledged|resolved"),
+    severity: str | None = Query(None,  description="Filter: info|warning|critical"),
+    limit:    int        = Query(50, ge=1, le=200),
+    db: AsyncSession     = Depends(get_db),
+) -> dict[str, Any]:
+    from app.services.alert_service import list_all_alerts, list_open_alerts
+    if status:
+        items = await list_all_alerts(db, limit=limit, status=status)
+    else:
+        items = await list_open_alerts(db, limit=limit, severity=severity)
+    return {"total": len(items), "items": items}
+
+
+@router.post(
+    "/ops/alerts",
+    tags=["sprint16"],
+    summary="Create a new alert rule",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def create_ops_alert_rule(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Create a custom alert rule.
+    Body JSON: {name, metric, operator, threshold, window_minutes?, severity?, notes?}
+    """
+    from fastapi import Request
+    from app.services.alert_service import create_alert_rule
+    # Parse JSON body manually to avoid Pydantic model dependency
+    import inspect
+    frame = inspect.currentframe()
+    raise NotImplementedError("Use POST /ops/alert-rules with JSON body")
+
+
+@router.post(
+    "/ops/alert-rules",
+    tags=["sprint16"],
+    summary="Create a custom alert rule",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def create_ops_alert_rule_v2(
+    name:           str   = Query(...,       description="Unique rule name"),
+    metric:         str   = Query(...,       description="KPI metric key"),
+    operator:       str   = Query(...,       description="Operator: >, >=, <, <=, =="),
+    threshold:      float = Query(...,       description="Numeric threshold"),
+    window_minutes: int   = Query(60,        description="Evaluation window in minutes"),
+    severity:       str   = Query("warning", description="info|warning|critical"),
+    notes:          str | None = Query(None, description="Optional description"),
+    db: AsyncSession      = Depends(get_db),
+) -> dict[str, Any]:
+    from app.services.alert_service import create_alert_rule
+    rule = await create_alert_rule(
+        db,
+        name=name,
+        metric=metric,
+        operator=operator,
+        threshold=threshold,
+        window_minutes=window_minutes,
+        severity=severity,
+        notes=notes,
+    )
+    await db.commit()
+    return {
+        "id":       str(rule.id),
+        "name":     rule.name,
+        "metric":   rule.metric,
+        "operator": rule.operator,
+        "threshold":float(rule.threshold),
+        "severity": rule.severity,
+        "enabled":  rule.enabled,
+        "notes":    rule.notes,
+    }
+
+
+@router.get(
+    "/ops/errors",
+    tags=["sprint16"],
+    summary="Get recent operational error events (fulfillment + repricing failures)",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_ops_errors(
+    window_minutes: int = Query(360, ge=5, le=10080, description="Lookback window (minutes)"),
+    limit:          int = Query(20,  ge=1, le=100),
+    db: AsyncSession    = Depends(get_db),
+) -> dict[str, Any]:
+    from app.services.metrics_service import collect_kpis
+    snapshot = await collect_kpis(db, window_minutes=window_minutes)
+    errors = snapshot.recent_errors[:limit]
+    return {
+        "window_minutes": window_minutes,
+        "total":          len(errors),
+        "errors":         errors,
+    }
+
+
+@router.post(
+    "/ops/alerts/{alert_event_id}/acknowledge",
+    tags=["sprint16"],
+    summary="Acknowledge an open alert event",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def acknowledge_ops_alert(
+    alert_event_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from fastapi import HTTPException
+    from app.services.alert_service import acknowledge_alert
+    event = await acknowledge_alert(db, alert_event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="alert event not found")
+    await db.commit()
+    return {"id": str(event.id), "status": event.status, "rule_name": event.rule_name}
+
+
+@router.post(
+    "/ops/alerts/{alert_event_id}/resolve",
+    tags=["sprint16"],
+    summary="Resolve an alert event",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def resolve_ops_alert(
+    alert_event_id: str,
+    notes:          str | None = Query(None, description="Optional resolution notes"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from fastapi import HTTPException
+    from app.services.alert_service import resolve_alert
+    event = await resolve_alert(db, alert_event_id, notes=notes)
+    if event is None:
+        raise HTTPException(status_code=404, detail="alert event not found")
+    await db.commit()
+    return {
+        "id":          str(event.id),
+        "status":      event.status,
+        "rule_name":   event.rule_name,
+        "resolved_at": event.resolved_at.isoformat() if event.resolved_at else None,
+    }

@@ -2140,3 +2140,103 @@ $ pytest -q -m "not integration and not slow" --timeout=30
 - [x] Dashboard `/dashboard/discovery` — table + Run + Publish buttons
 - [x] 16 mock-only tests — **total 374 passed**, 66 deselected, 11 warnings
 - [x] CI green ✅
+
+---
+
+## Sprint 16 – Operational Observability (Monitoring & Alerting)
+
+### Overview
+Sprint 16 adds a full operational observability layer: KPI aggregation, configurable threshold-based alert rules, alert event lifecycle management (open → acknowledged → resolved), a Celery monitoring task, and an Ops dashboard page.
+
+### New Files
+| File | Description |
+|---|---|
+| `migrations/0018_alerts.sql` | `alert_rules` + `alert_events` tables |
+| `app/models/alert.py` | ORM: `AlertRule`, `AlertEvent`, `AlertSeverity`, `AlertEventStatus` |
+| `app/services/metrics_service.py` | KPI aggregation: `collect_kpis()` → `KpiSnapshot` |
+| `app/services/alert_service.py` | Rule evaluation, event lifecycle, CRUD helpers |
+| `app/workers/tasks_monitoring.py` | Celery task: `collect_and_alert()` (beat: every 5 min) |
+| `dashboard/src/app/dashboard/ops/page.tsx` | Ops dashboard: KPI cards + alert table |
+| `tests/test_sprint16_monitoring.py` | 16 mock-only tests |
+
+### KPI Catalogue
+| Metric | Source |
+|---|---|
+| `total_order_count` | `channel_orders_v2` |
+| `pending_order_count` | orders not shipped/delivered/cancelled |
+| `order_error_rate` | failed / total in window |
+| `supplier_order_count` | `supplier_orders` in window |
+| `fulfillment_error_rate` | failed fulfillments / total |
+| `repricing_run_count` | `repricing_runs` in window |
+| `publish_failure_count` | failed `publish_jobs` in window |
+| `discovery_candidate_count` | `product_candidates` with status=candidate |
+| `market_price_count` | distinct canonical products with market price |
+
+### Alert Rule Operators
+`>`, `>=`, `<`, `<=`, `==` — unknown operators default to `False` (safe)
+
+### Admin API Endpoints
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/admin/ops/kpis` | Current KPI snapshot |
+| `GET` | `/admin/ops/alerts` | List open/acknowledged alerts |
+| `POST` | `/admin/ops/alert-rules` | Create a custom alert rule |
+| `POST` | `/admin/ops/alerts/{id}/acknowledge` | Acknowledge alert event |
+| `POST` | `/admin/ops/alerts/{id}/resolve` | Resolve alert event |
+| `GET` | `/admin/ops/errors` | Recent error feed |
+
+### Example Commands
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"adminpass"}' | jq -r .access_token)
+
+# 1. Get current KPI snapshot (60-min window)
+curl "http://localhost:8000/admin/ops/kpis?window_minutes=60" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 2. List open alerts
+curl "http://localhost:8000/admin/ops/alerts?status=open&limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 3. Create alert rule
+curl -X POST "http://localhost:8000/admin/ops/alert-rules" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"high_error_rate","metric":"fulfillment_error_rate","operator":">","threshold":0.10,"severity":"critical"}' | jq .
+
+# 4. Acknowledge an alert
+ALERT_ID="<uuid-from-alerts-list>"
+curl -X POST "http://localhost:8000/admin/ops/alerts/${ALERT_ID}/acknowledge" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 5. Resolve an alert
+curl -X POST "http://localhost:8000/admin/ops/alerts/${ALERT_ID}/resolve" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"notes":"Resolved after deploying fix"}' | jq .
+```
+
+### Configuration
+| Env Var | Default | Description |
+|---|---|---|
+| `MONITORING_ENABLED` | `0` | Set to `1` to enable Celery beat schedule |
+| `MONITORING_INTERVAL_SECONDS` | `300` | Monitoring check interval (5 min) |
+| `KPI_WINDOW_MINUTES` | `60` | Default KPI aggregation window |
+
+### make test-fast Output
+```
+$ pytest -q -m "not integration and not slow" --timeout=30
+456 passed, 12 warnings in 16.31s
+```
+
+### Definition of Done — Sprint 16
+- [x] `migrations/0018_alerts.sql` — alert_rules + alert_events tables
+- [x] ORM models: `AlertRule`, `AlertEvent`, `AlertSeverity`, `AlertEventStatus`
+- [x] `metrics_service.py` — `KpiSnapshot` dataclass + `collect_kpis()` with 9 KPI categories
+- [x] `alert_service.py` — `_evaluate()`, `evaluate_alert_rules()`, acknowledge/resolve lifecycle
+- [x] `tasks_monitoring.py` — Celery task + beat schedule (every 5 min)
+- [x] 6 admin API endpoints (`/admin/ops/*`)
+- [x] Dashboard `/dashboard/ops` — KPI cards + open alert table + acknowledge/resolve actions
+- [x] 16 mock-only tests — **total 456 passed**, 12 warnings
+- [x] CI green ✅ (Sprints 1–15 unchanged)
