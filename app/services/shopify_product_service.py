@@ -316,6 +316,51 @@ class ShopifyProductService:
         return ok
 
 
+    async def update_variant_price_by_id(
+        self,
+        shopify_variant_id: str,
+        new_price: float,
+    ) -> bool:
+        """
+        Update the price of a Shopify variant directly by variant ID.
+
+        Sprint 8 – used by the pricing engine which stores the variant ID
+        in shopify_mappings and no longer needs the full product object.
+
+        Parameters
+        ----------
+        shopify_variant_id : Shopify variant ID (string).
+        new_price          : New price as float.
+
+        Returns
+        -------
+        True if the update succeeded (or stub no-op), False on error.
+        """
+        log = logger.bind(
+            shopify_variant_id=shopify_variant_id,
+            new_price=new_price,
+        )
+        log.info("shopify_product_service.update_variant_price_by_id")
+
+        result = await self._client._put(  # type: ignore[protected-access]
+            f"/variants/{shopify_variant_id}.json",
+            {
+                "variant": {
+                    "id":    shopify_variant_id,
+                    "price": f"{new_price:.2f}",
+                }
+            },
+        )
+
+        ok = bool(result) and "variant" in result
+        log.info(
+            "shopify_product_service.update_variant_price_by_id.done",
+            ok=ok,
+        )
+        return ok
+
+    # ─────────────────────────────────────────────────────────────────────────
+
 def get_shopify_product_service(
     client: ShopifyClient | None = None,
 ) -> ShopifyProductService:

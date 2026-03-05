@@ -706,6 +706,229 @@ async def get_supplier_summary(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# CANONICAL PRODUCTS (Sprint 8)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/canonical/products",
+    tags=["canonical"],
+    summary="List all canonical products",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_canonical_products(
+    limit: int = Query(200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return up to *limit* canonical_products rows."""
+    from sqlalchemy import select as _select
+    from app.models.canonical_product import CanonicalProduct
+
+    stmt   = _select(CanonicalProduct).limit(limit)
+    result = await db.execute(stmt)
+    items  = [
+        {
+            "id":              str(cp.id),
+            "canonical_sku":   cp.canonical_sku,
+            "name":            cp.name,
+            "brand":           cp.brand,
+            "size_ml":         cp.size_ml,
+            "pricing_enabled": cp.pricing_enabled,
+            "last_price":      float(cp.last_price) if cp.last_price is not None else None,
+            "last_price_at":   cp.last_price_at.isoformat() if cp.last_price_at else None,
+        }
+        for cp in result.scalars().all()
+    ]
+    return {"count": len(items), "items": items}
+
+
+@router.get(
+    "/canonical/products/{canonical_id}",
+    tags=["canonical"],
+    summary="Get a single canonical product",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_canonical_product(
+    canonical_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return one canonical_product by id."""
+    from sqlalchemy import select as _select
+    from app.models.canonical_product import CanonicalProduct
+
+    stmt   = _select(CanonicalProduct).where(CanonicalProduct.id == canonical_id)
+    result = await db.execute(stmt)
+    cp     = result.scalar_one_or_none()
+    if cp is None:
+        raise HTTPException(status_code=404, detail=f"Canonical product {canonical_id} not found")
+
+    return {
+        "id":                    str(cp.id),
+        "canonical_sku":         cp.canonical_sku,
+        "name":                  cp.name,
+        "brand":                 cp.brand,
+        "size_ml":               cp.size_ml,
+        "pricing_enabled":       cp.pricing_enabled,
+        "target_margin_rate":    float(cp.target_margin_rate)    if cp.target_margin_rate    else None,
+        "min_margin_abs":        float(cp.min_margin_abs)        if cp.min_margin_abs        else None,
+        "shipping_cost_default": float(cp.shipping_cost_default) if cp.shipping_cost_default else None,
+        "last_price":            float(cp.last_price)            if cp.last_price            else None,
+        "last_price_at":         cp.last_price_at.isoformat()    if cp.last_price_at         else None,
+        "created_at":            cp.created_at.isoformat()       if cp.created_at            else None,
+    }
+
+
+@router.get(
+    "/canonical/products/{canonical_id}/suppliers",
+    tags=["canonical"],
+    summary="Supplier products for a canonical product",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def get_canonical_suppliers(
+    canonical_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return all supplier_products rows for a canonical_product_id."""
+    from sqlalchemy import select as _select
+    from app.models.supplier_product import SupplierProduct
+
+    stmt   = _select(SupplierProduct).where(
+        SupplierProduct.canonical_product_id == canonical_id,
+    )
+    result = await db.execute(stmt)
+    rows   = result.scalars().all()
+    items  = [
+        {
+            "supplier":             r.supplier,
+            "supplier_product_id":  r.supplier_product_id,
+            "supplier_product_url": getattr(r, "supplier_product_url", None),
+            "price":                float(r.price) if r.price is not None else None,
+            "stock_status":         r.stock_status,
+            "last_checked_at":      r.last_checked_at.isoformat() if r.last_checked_at else None,
+        }
+        for r in rows
+    ]
+    return {"canonical_product_id": str(canonical_id), "items": items}
+
+
+@router.post(
+    "/canonical/backfill",
+    tags=["canonical"],
+    summary="Backfill canonical_product_id for all legacy product rows",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def canonical_backfill(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Run the canonical backfill job: for every Product without a
+    canonical_product_id, create/find a CanonicalProduct and link it.
+    """
+    from sqlalchemy import select as _select
+    from app.models.product import Product
+    from app.services.canonical_service import get_or_create_canonical_from_product
+
+    stmt     = _select(Product).where(Product.canonical_product_id.is_(None))
+    result   = await db.execute(stmt)
+    products = list(result.scalars().all())
+
+    linked = 0
+    errors = 0
+    for product in products:
+        try:
+            await get_or_create_canonical_from_product(product, db)
+            linked += 1
+        except Exception as exc:
+            errors += 1
+            logger.error(
+                "admin.canonical_backfill.error",
+                product_id=str(product.id),
+                error=str(exc),
+            )
+
+    await db.commit()
+    return {"linked": linked, "errors": errors, "total": len(products)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PRICING ENGINE (Sprint 8)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/pricing/quotes",
+    tags=["pricing"],
+    summary="List recent price quotes",
+    dependencies=[Depends(require_role("VIEWER"))],
+)
+async def list_price_quotes(
+    limit: int = Query(200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return recent price_quotes ordered newest first."""
+    from sqlalchemy import select as _select
+    from app.models.price_quote import PriceQuote
+
+    stmt   = _select(PriceQuote).order_by(PriceQuote.created_at.desc()).limit(limit)
+    result = await db.execute(stmt)
+    items  = [
+        {
+            "id":                    str(q.id),
+            "canonical_product_id":  str(q.canonical_product_id),
+            "supplier":              q.supplier,
+            "supplier_price":        float(q.supplier_price),
+            "shipping_cost":         float(q.shipping_cost),
+            "fee_rate":              float(q.fee_rate),
+            "target_margin_rate":    float(q.target_margin_rate),
+            "min_margin_abs":        float(q.min_margin_abs),
+            "computed_price":        float(q.computed_price),
+            "rounded_price":         float(q.rounded_price),
+            "reason":                q.reason,
+            "created_at":            q.created_at.isoformat() if q.created_at else None,
+        }
+        for q in result.scalars().all()
+    ]
+    return {"count": len(items), "items": items}
+
+
+@router.post(
+    "/pricing/sync",
+    tags=["pricing"],
+    summary="Trigger pricing sync for all canonical products",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def trigger_pricing_sync() -> dict[str, Any]:
+    """Dispatch the sync_prices Celery task asynchronously."""
+    task = celery_app.send_task("workers.tasks_pricing.sync_prices")
+    logger.info("admin.pricing_sync.dispatched", task_id=str(task.id))
+    return {"task_id": str(task.id), "status": "dispatched"}
+
+
+@router.post(
+    "/pricing/canonical/{canonical_id}/sync",
+    tags=["pricing"],
+    summary="Trigger pricing sync for one canonical product",
+    dependencies=[Depends(require_role("OPERATOR"))],
+)
+async def trigger_pricing_sync_for_canonical(
+    canonical_id: UUID,
+) -> dict[str, Any]:
+    """Dispatch sync_price_for_canonical for a single product."""
+    task = celery_app.send_task(
+        "workers.tasks_pricing.sync_price_for_canonical",
+        args=[str(canonical_id)],
+    )
+    logger.info(
+        "admin.pricing_sync_canonical.dispatched",
+        canonical_id=str(canonical_id),
+        task_id=str(task.id),
+    )
+    return {
+        "canonical_product_id": str(canonical_id),
+        "task_id":              str(task.id),
+        "status":               "dispatched",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 

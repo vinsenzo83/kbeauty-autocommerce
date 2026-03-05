@@ -57,10 +57,10 @@ class SupplierProduct(Base):
         nullable=False,
     )
 
-    # FK to products (no relationship object; we keep models decoupled)
+    # FK to products (nullable: Sprint 8 canonical-based rows may not have product_id)
     product_id = Column(
         UUID(as_uuid=True),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 
@@ -70,7 +70,17 @@ class SupplierProduct(Base):
         index=True,
     )
 
+    # Sprint 8: canonical anchor (nullable for backward compat during migration)
+    canonical_product_id = Column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+    )
+
     supplier_product_id = Column(Text, nullable=False)
+
+    # Sprint 8: URL used by the crawler for this supplier's listing
+    supplier_product_url = Column(Text, nullable=True)
 
     price = Column(Numeric(12, 2), nullable=True)
 

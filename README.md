@@ -691,3 +691,158 @@ migrations/0007_supplier_products.sql     – Idempotent DB migration
 tests/test_sprint7_supplier_products.py   – 12 mock-only CRUD tests
 tests/test_sprint7_supplier_router.py     – 15 mock-only router + crawler tests
 ```
+
+---
+
+## Sprint 8: Canonical Layer + Pricing Engine
+
+### Why canonical_products?
+
+The `products` table was StyleKorean-originated (one row per supplier SKU).
+This made multi-supplier matching unstable: the same real-world product
+had no shared identity across suppliers.
+
+`canonical_products` is the **primary identity** for a real-world product.
+It is supplier-agnostic and Shopify-agnostic.
+
+```
+canonical_products
+  id             UUID PK
+  canonical_sku  TEXT UNIQUE  ← stable slug: brand-name[-size_ml]
+  name / brand / size_ml / ean
+  pricing_enabled / target_margin_rate / min_margin_abs / shipping_cost_default
+  last_price / last_price_at
+```
+
+### How supplier_products maps to canonical
+
+`supplier_products` now has `canonical_product_id` (FK → canonical_products).
+Each row = one supplier's listing of a canonical product.
+
+```
+canonical_products (1) ──── (N) supplier_products
+                               supplier, supplier_product_id, supplier_product_url
+                               price, stock_status, last_checked_at
+```
+
+Constraints:
+- `UNIQUE(canonical_product_id, supplier)` – one row per supplier per canonical product
+- `UNIQUE(supplier, supplier_product_id)` – supplier-scoped SKU uniqueness
+
+`product_id` is kept for backward compatibility (pre-Sprint-8 rows).
+
+### How shopify_mappings works
+
+```
+canonical_products (1) ──── (0..1) shopify_mappings
+                                   shopify_product_id
+                                   shopify_variant_id  ← used by pricing engine
+                                   shopify_inventory_item_id
+```
+
+One canonical product → at most one Shopify variant.
+
+### How to run backfill
+
+```bash
+# Via Admin API (OPERATOR role required):
+POST /admin/canonical/backfill
+
+# Or run migrations against your PostgreSQL DB:
+psql $DATABASE_URL < migrations/0008_canonical_layer.sql
+psql $DATABASE_URL < migrations/0009_pricing_engine.sql
+```
+
+### How pricing is computed
+
+```
+cost        = supplier_price + shipping_cost
+sell_price  = cost / (1 - target_margin_rate - fee_rate)
+```
+Then `enforce_min_margin` ensures `sell_price - cost - shipping - fee >= min_margin_abs`.
+Finally, `apply_rounding_usd` rounds to `*.99` (e.g. 19.40 → 19.99).
+
+**Defaults per canonical_product:**
+| Setting             | Default |
+|---------------------|---------|
+| target_margin_rate  | 30 %    |
+| min_margin_abs      | $3.00   |
+| shipping_cost       | $3.00   |
+| fee_rate            | 3 % (global) |
+
+### How to run tasks manually
+
+```bash
+# Supplier product sync (canonical-based, every 60 min):
+celery -A app.workers.celery_app call workers.tasks_supplier_products.sync_supplier_products
+
+# Pricing sync for all products (every 6 h):
+celery -A app.workers.celery_app call workers.tasks_pricing.sync_prices
+
+# Pricing sync for one canonical product (on demand):
+celery -A app.workers.celery_app call workers.tasks_pricing.sync_price_for_canonical \
+  --args '["<canonical-product-uuid>"]'
+```
+
+### New Admin Endpoints
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| GET | `/admin/canonical/products` | VIEWER | List all canonical products |
+| GET | `/admin/canonical/products/{id}` | VIEWER | Get one canonical product |
+| GET | `/admin/canonical/products/{id}/suppliers` | VIEWER | Supplier rows for canonical |
+| POST | `/admin/canonical/backfill` | OPERATOR | Backfill canonical_product_id |
+| GET | `/admin/pricing/quotes` | VIEWER | List recent price quotes |
+| POST | `/admin/pricing/sync` | OPERATOR | Trigger full pricing sync |
+| POST | `/admin/pricing/canonical/{id}/sync` | OPERATOR | Sync price for one product |
+
+### Testing
+
+```bash
+# Fast (mock-only, no network):
+make test-fast
+# or:
+pytest -q -m "not integration and not slow" --maxfail=1
+
+# Full suite (includes integration):
+make test
+```
+
+CI green is the final gate.
+
+### New files in Sprint 8
+
+```
+migrations/
+  0008_canonical_layer.sql          – canonical_products, shopify_mappings, backfill
+  0009_pricing_engine.sql           – price_quotes table
+
+app/models/
+  canonical_product.py              – CanonicalProduct ORM model
+  shopify_mapping.py                – ShopifyMapping ORM model
+  price_quote.py                    – PriceQuote ORM model
+
+app/services/
+  canonical_service.py              – make_canonical_sku, get_or_create, attach_supplier
+  pricing_rules.py                  – Pure compute_price, rounding, min_margin
+  pricing_service.py                – generate_quote, apply_quote_to_shopify
+
+app/workers/
+  tasks_pricing.py                  – sync_prices (6h), sync_price_for_canonical
+
+Modified:
+  app/models/supplier_product.py    – added canonical_product_id, supplier_product_url
+  app/models/product.py             – added canonical_product_id
+  app/services/supplier_router.py   – choose_best_supplier_for_canonical (Sprint 8 primary)
+  app/services/shopify_product_service.py – update_variant_price_by_id
+  app/workers/tasks_supplier_products.py  – canonical-based sync, legacy fallback
+  app/workers/celery_app.py         – added tasks_pricing, sync-prices-every-6h schedule
+  app/routers/admin.py              – canonical + pricing endpoints
+
+tests/
+  test_sprint8_canonical_mapping.py    – 12 tests: SKU gen, get_or_create, backfill
+  test_sprint8_supplier_router_canonical.py – 10 tests: canonical routing, beat schedule
+  test_sprint8_pricing_rules.py        – 12 tests: pure rounding + margin
+  test_sprint8_pricing_service.py      – 10 tests: quote generation + Shopify apply
+  test_sprint8_migrations_or_schema.py – 10 tests: ORM schema inspection
+```

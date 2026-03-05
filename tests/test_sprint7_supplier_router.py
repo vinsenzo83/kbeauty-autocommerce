@@ -360,21 +360,33 @@ async def test_run_sync_end_to_end():
     """
     _run_sync fetches inventory for all products and upserts supplier_products rows.
     Uses patched AsyncSessionLocal + fake fetch_fns (no real DB, no real network).
-    """
-    # We need Product model in the same SQLite DB
-    from app.models.product import Base as PBase, Product
 
-    async with test_engine.begin() as conn:
+    Sprint 8 note: _run_sync now iterates canonical_products first.
+    When canonical_products is empty, it falls back to legacy product-based sync.
+    """
+    # We need Product + CanonicalProduct model in the same SQLite DB
+    from app.models.product import Base as PBase, Product
+    import app.models.canonical_product as _cp_mod2
+
+    # Use a dedicated engine per test run to avoid cross-backend UNIQUE conflicts
+    from sqlalchemy.ext.asyncio import create_async_engine as _cae, async_sessionmaker as _asm
+    local_engine  = _cae("sqlite+aiosqlite:///:memory:", echo=False)
+    LocalSession  = _asm(local_engine, expire_on_commit=False, class_=AsyncSession)
+
+    from app.models.supplier_product import Base as SpBase2
+    async with local_engine.begin() as conn:
+        await conn.run_sync(SpBase2.metadata.create_all)
         await conn.run_sync(PBase.metadata.create_all)
+        await conn.run_sync(_cp_mod2.Base.metadata.create_all)
 
     pid = uuid4()
     product_url = "https://stylekorean.com/products/some-cream"
 
-    async with TestSession() as s:
+    async with LocalSession() as s:
         p = Product(
             id=pid,
             supplier="stylekorean",
-            supplier_product_id="sk-run-sync-001",
+            supplier_product_id=f"sk-run-sync-{pid.hex[:8]}",
             supplier_product_url=product_url,
             name="Test Cream",
             price="15.00",
@@ -391,15 +403,16 @@ async def test_run_sync_end_to_end():
 
     from app.workers.tasks_supplier_products import _run_sync
 
-    with patch("app.workers.tasks_supplier_products.AsyncSessionLocal", TestSession):
-        result = await _run_sync(fetch_fns=fake_fetch_fns)
+    # canonical_products is empty → falls back to legacy product-based sync
+    result = await _run_sync(fetch_fns=fake_fetch_fns, session_factory=LocalSession)
 
-    assert result["total_products"] == 1
-    assert result["rows_upserted"]  == 3    # one per supplier
-    assert result["errors"]         == 0
+    # Legacy fallback returns total_canonicals=0 and uses rows_updated key
+    assert result["total_canonicals"] == 0
+    assert result["rows_updated"] == 3    # one per supplier (via legacy path)
+    assert result["errors"]       == 0
 
     # Verify OliveYoung row is OUT_OF_STOCK
-    async with TestSession() as s:
+    async with LocalSession() as s:
         from sqlalchemy import select
         rows = (await s.execute(
             select(SupplierProduct).where(SupplierProduct.product_id == pid)
@@ -410,6 +423,4 @@ async def test_run_sync_end_to_end():
     assert by_supplier["JOLSE"].stock_status      == "IN_STOCK"
     assert float(by_supplier["JOLSE"].price)      == pytest.approx(12.00)
 
-    # Clean up Product table
-    async with test_engine.begin() as conn:
-        await conn.run_sync(PBase.metadata.drop_all)
+    await local_engine.dispose()

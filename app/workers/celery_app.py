@@ -19,6 +19,7 @@ celery_app = Celery(
         "app.workers.tasks_products",          # Sprint 4
         "app.workers.tasks_inventory",         # Sprint 6
         "app.workers.tasks_supplier_products", # Sprint 7
+        "app.workers.tasks_pricing",           # Sprint 8
     ],
 )
 
@@ -28,6 +29,7 @@ _CRAWL_INTERVAL              = int(os.getenv("PRODUCT_CRAWL_INTERVAL",        "4
 _SHOPIFY_SYNC_INTERVAL       = int(os.getenv("PRODUCT_SYNC_INTERVAL",         "1800"))  # 30 min
 _INVENTORY_SYNC_INTERVAL     = int(os.getenv("INVENTORY_SYNC_INTERVAL",       "1800"))  # 30 min
 _SUPPLIER_SYNC_INTERVAL      = int(os.getenv("SUPPLIER_SYNC_INTERVAL",        "3600"))  # 60 min
+_PRICING_SYNC_INTERVAL       = int(os.getenv("PRICING_SYNC_INTERVAL",         "21600")) # 6 h
 
 celery_app.conf.update(
     # Serialisation
@@ -81,6 +83,13 @@ celery_app.conf.update(
             "task":     "workers.tasks_supplier_products.sync_supplier_products",
             "schedule": _SUPPLIER_SYNC_INTERVAL,
             "options":  {"expires": _SUPPLIER_SYNC_INTERVAL},
+        },
+
+        # Sprint 8: Pricing sync every 6 hours
+        "sync-prices-every-6h": {
+            "task":     "workers.tasks_pricing.sync_prices",
+            "schedule": _PRICING_SYNC_INTERVAL,
+            "options":  {"expires": _PRICING_SYNC_INTERVAL},
         },
     },
 )

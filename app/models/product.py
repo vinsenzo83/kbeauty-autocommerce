@@ -68,6 +68,13 @@ class Product(Base):
     shopify_variant_id         = Column(String(64), nullable=True)
     shopify_inventory_item_id  = Column(String(64), nullable=True)
 
+    # ── Canonical layer (Sprint 8) ────────────────────────────────────────────
+    canonical_product_id = Column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+    )
+
     # ── Inventory sync fields (Sprint 6) ─────────────────────────────────────
     last_seen_price  = Column(Numeric(12, 2), nullable=True)
     last_checked_at  = Column(DateTime(timezone=True), nullable=True)
